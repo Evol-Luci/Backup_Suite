@@ -27,17 +27,23 @@ if not exist "%exclusion_file%" (
 )
 
 :menu
-cls
-echo ===================================
-echo  Manage Backup Exclusions & Run
-echo  File: "%exclusion_file%"
-echo ===================================
-echo Actions:
-echo   ADD [item]    - Add 'item' to exclusions
-echo   REMOVE [item] - Remove 'item' from exclusions
-echo   LIST          - Show current exclusions
-echo   RUN           - Execute the backup.bat script
-echo   EXIT          - Quit this script
+echo ==============================================
+echo  Manage Backup Exclusions - Interactive Menu
+echo  Config: "%exclusion_file%"
+echo ==============================================
+echo [ACTIONS]
+echo   ADD [pattern]    - Add exclusion pattern
+echo   REMOVE [pattern] - Remove exclusion pattern
+echo   LIST             - List current exclusions
+echo   RUN              - Run backup now
+echo   HELP             - Show usage instructions
+echo   EXIT             - Quit this menu
+echo.
+echo [PATTERN EXAMPLES]
+echo   ADD node_modules/  - Exclude directory
+echo   ADD *.tmp          - Exclude all .tmp files
+echo   ADD build\         - Exclude build directory
+echo ==============================================
 echo ===================================
 echo.
 set "user_input="
@@ -61,6 +67,7 @@ if /i "%command%"=="ADD" set "valid_command=1"
 if /i "%command%"=="EXCLUDE" set "valid_command=1" & set "command=ADD"
 if /i "%command%"=="REMOVE" set "valid_command=1"
 if /i "%command%"=="INCLUDE" set "valid_command=1" & set "command=REMOVE"
+if /i "%command%"=="HELP" set "valid_command=1"
 if /i "%command%"=="LIST" set "valid_command=1"
 if /i "%command%"=="RUN" set "valid_command=1"  :: Added RUN
 if /i "%command%"=="BACKUP" set "valid_command=1" & set "command=RUN" :: Synonym
@@ -81,6 +88,7 @@ if /i "%command%"=="ADD" goto :add_action
 if /i "%command%"=="REMOVE" goto :remove_action
 if /i "%command%"=="LIST" goto :list_action
 if /i "%command%"=="RUN" goto :run_backup_action  :: Added RUN route
+if /i "%command%"=="HELP" goto :help_action
 if /i "%command%"=="EXIT" goto :quit
 
 echo Internal routing error for command "%command%" >> "%debug_log%"
@@ -128,10 +136,30 @@ goto :menu
 :: ================== ADD Action ==================
 :add_action
 echo DEBUG: Reached add_action >> "%debug_log%"
-:: Check item using goto structure
+:: Check item exists and is valid
 if not defined item goto :add_action_no_item
+
+:: Validate pattern doesn't contain invalid characters
+echo !item!|findstr /r "[][<>|?*]" >nul
+if !errorlevel! equ 0 (
+    echo ERROR: Invalid characters in pattern "!item!" >> "%debug_log%"
+    echo ERROR: Pattern cannot contain: []<>|?*
+    goto :add_action_invalid
+)
+
 echo DEBUG: ADD action - item IS defined: "!item!" >> "%debug_log%"
+:: Additional validation for paths
+if exist "!item!" (
+    echo DEBUG: Path exists, adding as absolute exclusion >> "%debug_log%"
+) else (
+    echo DEBUG: Adding as pattern match >> "%debug_log%"
+)
 goto :add_action_check_exists
+
+:add_action_invalid
+echo.
+pause
+goto :menu
 
 :add_action_no_item
     echo DEBUG: ADD action - item is NOT defined. >> "%debug_log%"
@@ -302,6 +330,17 @@ goto :menu
 
 
 :: ================== QUIT ==================
+:help_action
+echo.
+echo [EXCLUSION PATTERN HELP]
+echo   Directory: End with / or \ (e.g. node_modules/)
+echo   File: Specific name or wildcard (e.g. *.log)
+echo   Paths: Can be relative or absolute
+echo   Note: The Backup_Suite folder is always excluded
+echo.
+pause
+goto :menu
+
 :quit
 echo DEBUG: Reached quit >> "%debug_log%"
 echo Exiting script.

@@ -1,7 +1,12 @@
 @echo off
 setlocal enabledelayedexpansion
 
-echo Starting script... [V10 - Relocated Backup]
+:: === Initialize Logging ===
+set "log_file=%~dp0backup_debug.log"
+echo === Backup Started: %DATE% %TIME% === > "%log_file%"
+echo Script version: [V11 - Configurable Backup] >> "%log_file%"
+
+echo Starting script... [V11 - Configurable Backup]
 
 :: === Path Calculations ===
 set "script_dir=%~dp0"
@@ -23,22 +28,47 @@ echo Grandparent Directory: "%grandparent_dir%"
 set "backup_folder=%grandparent_dir%Backups"
 echo Backup destination base folder: "%backup_folder%"
 
-:: Define exclusion list file (lives next to this script)
+:: === Configuration Settings ===
+set "config_file=%script_dir%config_settings.txt"
 set "exclusion_file=%script_dir%backup_exclusions.txt"
+
+:: Default backup retention if not configured
+set "backup_volumes_to_keep=2"
+
+:: Read config file if exists
+if exist "%config_file%" (
+    echo Reading configuration from "%config_file%" >> "%log_file%"
+    for /f "tokens=1,2 delims==" %%A in ('type "%config_file%" ^| findstr /i "backup_volumes_to_keep"') do (
+        set "%%A=%%B"
+    )
+)
+
+echo Backup volumes to keep: %backup_volumes_to_keep% >> "%log_file%"
 echo Exclusion list file: "%exclusion_file%"
 
-:: === Build Robocopy /XD arguments from the exclusion file ===
+:: === Build Robocopy exclusion arguments ===
 set "robocopy_xd_args="
+set "robocopy_xf_args="
 if exist "%exclusion_file%" (
     echo Reading exclusions from "%exclusion_file%"...
     for /f "usebackq delims=" %%L in ("%exclusion_file%") do (
+        echo Processing exclusion pattern: "%%L" >> "%log_file%"
         echo Adding exclusion from file: "%%L"
-        set "robocopy_xd_args=!robocopy_xd_args! /XD "%%L""
+        :: Check if pattern ends with / or \ (directory)
+        echo %%L|findstr /r "[\\/]$" >nul
+        if !errorlevel! equ 0 (
+            set "robocopy_xd_args=!robocopy_xd_args! /XD "%%L""
+            echo Classified as directory exclusion >> "%log_file%"
+        ) else (
+            set "robocopy_xf_args=!robocopy_xf_args! /XF "%%L""
+            echo Classified as file exclusion >> "%log_file%"
+        )
     )
 ) else (
-    echo Exclusion file not found. Proceeding without file-based exclusions.
+    echo Exclusion file not found. Proceeding without file-based exclusions. >> "%log_file%"
 )
-echo Final Robocopy /XD arguments constructed: %robocopy_xd_args%
+echo Final Robocopy Directory exclusions: %robocopy_xd_args% >> "%log_file%"
+echo Final Robocopy File exclusions: %robocopy_xf_args% >> "%log_file%"
 
 
 :: Create Backups folder if it doesn't exist
@@ -46,9 +76,12 @@ if not exist "%backup_folder%" (
     echo Creating Backups folder: "%backup_folder%"
     mkdir "%backup_folder%"
     if errorlevel 1 (
+      echo ERROR: Failed to create backup folder. Check permissions. >> "%log_file%"
       echo ERROR: Failed to create backup folder. Check permissions.
       pause
       goto :eof_error
+    ) else (
+      echo Successfully created backup folder >> "%log_file%"
     )
 )
 
@@ -56,9 +89,12 @@ if not exist "%backup_folder%" (
 set "datetime="
 for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /value') do set datetime=%%I
 if not defined datetime (
+    echo ERROR: Failed to get date/time from WMIC. >> "%log_file%"
     echo ERROR: Failed to get date/time from WMIC.
     pause
     goto :eof_error
+) else (
+    echo Timestamp acquired: %datetime% >> "%log_file%"
 )
 set "YYYY=!datetime:~0,4!"
 set "MM=!datetime:~4,2!"
@@ -82,7 +118,7 @@ if exist "%copy_dir%\" rmdir /S /Q "%copy_dir%"
 echo Copying files from "%robosource%" to "%copy_dir%" using Robocopy...
 echo *** Robocopy progress: Shows directories, per-file %%, ETA ***
 :: *** Added /XD "Backup_Suite" to always exclude the script's own folder ***
-robocopy "%robosource%" "%copy_dir%" /E /COPY:DAT %robocopy_xd_args% /XD "Backup_Suite" /R:1 /W:1 /NFL /NJH /NJS /ETA
+robocopy "%robosource%" "%copy_dir%" /E /COPY:DAT %robocopy_xd_args% %robocopy_xf_args% /XD "Backup_Suite" /R:1 /W:1 /NFL /NJH /NJS /ETA
 set RBERROR=%ERRORLEVEL%
 echo *** Robocopy finished with Exit Code: %RBERROR% ***
 
@@ -91,8 +127,12 @@ if %RBERROR% GTR 1 goto :robocopy_failed
 goto :robocopy_ok
 
 :robocopy_failed
+    echo ERROR: Robocopy failed (Code %RBERROR%). See Robocopy docs for error meanings. >> "%log_file%"
     echo ERROR: Robocopy failed or had issues (Code %RBERROR%). Check Robocopy documentation for code meanings.
-    if exist "%copy_dir%\" rmdir /S /Q "%copy_dir%"
+    if exist "%copy_dir%\" (
+        echo Cleaning up failed copy directory >> "%log_file%"
+        rmdir /S /Q "%copy_dir%"
+    )
     pause
     goto :eof_error
 
@@ -113,8 +153,12 @@ if %ZIPERROR% neq 0 goto :zip_failed
 goto :zip_ok
 
 :zip_failed
+    echo ERROR: PowerShell zip failed (Code %ZIPERROR%). Check disk space/permissions. >> "%log_file%"
     echo ERROR: Failed to create zip file with PowerShell. Exit Code %ZIPERROR%.
-    if exist "%copy_dir%\" rmdir /S /Q "%copy_dir%"
+    if exist "%copy_dir%\" (
+        echo Cleaning up after zip failure >> "%log_file%"
+        rmdir /S /Q "%copy_dir%"
+    )
     pause
     goto :eof_error
 
@@ -125,11 +169,13 @@ goto :zip_ok
     goto :zip_verify_failed
 
 :zip_verify_failed
+    echo CRITICAL ERROR: Zip file missing after successful creation! Check disk space. >> "%log_file%"
     echo CRITICAL ERROR: Zip file "!zip_file!" NOT found despite PowerShell success! Check disk space/permissions.
     pause
     goto :eof_error
 
 :zip_verify_ok
+    echo SUCCESS: Zip file created at "!zip_file!" >> "%log_file%"
     echo SUCCESS: Zip file "!zip_file!" found.
 
 
@@ -141,11 +187,13 @@ if exist "%copy_dir%\" goto :delete_temp_failed
 goto :delete_temp_ok
 
 :delete_temp_failed
+    echo WARNING: Could not delete temp folder "%copy_dir%". Continuing... >> "%log_file%"
     echo ERROR: Failed to delete temporary folder "%copy_dir%". Check permissions or file locks.
     pause
     goto :perform_cleanup
 
 :delete_temp_ok
+    echo Temporary folder cleanup completed >> "%log_file%"
     echo Temporary folder deleted successfully.
 
 
@@ -159,9 +207,11 @@ set count=0
 for /f %%C in ('dir /b "%backup_pattern%" 2^>nul ^| find /c /v ""') do set count=%%C
 echo Found %count% backup files matching pattern in "%backup_folder%"
 
-:: If there are more than 2 backups, delete the oldest one
-echo Checking if count (%count%) is greater than 2...
-if %count% GTR 2 goto :delete_oldest_check
+:: If there are more than configured backups, delete the oldest ones
+set /a "delete_threshold=%backup_volumes_to_keep%"
+echo Checking if count (%count%) is greater than %delete_threshold%... >> "%log_file%"
+echo Checking if count (%count%) is greater than %delete_threshold%...
+if %count% GTR %delete_threshold% goto :delete_oldest_check
 goto :delete_oldest_skip
 
 :delete_oldest_check
@@ -180,28 +230,33 @@ goto :delete_oldest_skip
     goto :delete_oldest_done
 
 :delete_oldest_do
-    echo Oldest backup identified as: !oldest_backup!
+    echo Oldest backup identified as: !oldest_backup! >> "%log_file%"
     set "file_to_delete=%backup_folder%\!oldest_backup!"
+    echo Preparing to delete: "!file_to_delete!" >> "%log_file%"
     echo Preparing to delete: "!file_to_delete!"
     del "!file_to_delete!"
     if errorlevel 1 goto :delete_oldest_failed
     goto :delete_oldest_success
 
 :delete_oldest_failed
+    echo ERROR: Failed to delete old backup (Code %ERRORLEVEL%). File may be locked. >> "%log_file%"
     echo ERRORLEVEL %ERRORLEVEL%: Failed to delete "!file_to_delete!". Check permissions or lock.
     goto :delete_oldest_done
 
 :delete_oldest_success
+    echo Successfully rotated old backup: "!file_to_delete!" >> "%log_file%"
     echo Successfully deleted "!file_to_delete!".
     goto :delete_oldest_done
 
 :delete_oldest_skip
-    echo Backup count %count% is not greater than 2. No deletion needed.
+    echo Backup count %count% is not greater than %delete_threshold%. No deletion needed. >> "%log_file%"
+    echo Backup count %count% is not greater than %delete_threshold%. No deletion needed.
 
 :delete_oldest_done
     echo Finished backup rotation check.
 
 
+echo Backup process complete. Result: %zip_file% >> "%log_file%"
 echo Backup process complete. Last operation resulted in: %zip_file%
 
 :final_pause
@@ -211,6 +266,7 @@ endlocal
 goto :eof
 
 :eof_error
+echo --- SCRIPT ENDED DUE TO ERROR --- >> "%log_file%"
 echo --- SCRIPT ENDED DUE TO ERROR ---
 pause
 endlocal

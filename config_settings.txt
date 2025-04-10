@@ -1,0 +1,3 @@
+### Backup Settings ###
+backup_volumes_to_keep=3
+
