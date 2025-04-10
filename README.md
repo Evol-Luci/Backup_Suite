@@ -41,10 +41,10 @@ Simply:
 ### Managing What Gets Backed Up
 Common commands:  
 ```
-ADD Downloads/    ← Exclude entire folder  
-ADD *.temp        ← Skip all .temp files  
-REMOVE Downloads/ ← Remove an exclusion  
-LIST             ← View current exclusions
+ADD node_modules   ← Exclude directory
+ADD *.tmp          ← Skip all .tmp files
+REMOVE node_modules ← Remove exclusion
+LIST             ← View exclusions
 ```
 
 ## ⚙️ Configuration Made Simple

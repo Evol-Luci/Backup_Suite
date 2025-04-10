@@ -1,20 +1,32 @@
-=== Backup Started: Wed 04/09/2025 20:31:06.38 === 
-Script version: [V11 - Configurable Backup] 
+=== Backup Started: Thu 04/10/2025 16:16:03.37 === 
+Script version: [V2.5 - Configurable Backup] 
 Reading configuration from "F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Test_Directory\Backup_Suite\config_settings.txt" 
-Backup volumes to keep: 3 
-Processing exclusion pattern: "TestDirectory0/TestDirectory2/" 
-Classified as directory exclusion 
-Processing exclusion pattern: "TestDirectory1/" 
-Classified as directory exclusion 
-Processing exclusion pattern: "File1.txt" 
-Classified as file exclusion 
-Final Robocopy Directory exclusions:  /XD "TestDirectory0/TestDirectory2/" /XD "TestDirectory1/" 
-Final Robocopy File exclusions:  /XF "File1.txt" 
-Timestamp acquired: 20250409203106.518000-240 
-SUCCESS: Zip file created at "F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Backups\Backup_2025-04-09_20-31-06.zip" 
+DEBUG: Raw config line: # Backup Settings= 
+DEBUG: Trimmed Config Key: '#BackupSettings', Value: ' =' 
+DEBUG: Raw config line: backup_volumes_to_keep=2 
+DEBUG: Trimmed Config Key: 'backup_volumes_to_keep', Value: '2' 
+DEBUG: Key 'backup_volumes_to_keep' found. Setting value to '2' 
+DEBUG: Raw config line: backup_base_name=Test_Backups 
+DEBUG: Trimmed Config Key: 'backup_base_name', Value: 'Test_Backups' 
+DEBUG: Key 'backup_base_name' found. Setting value to 'Test_Backups' 
+Backup volumes to keep: 2 
+Backup destination base folder: "F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Test_Backups" using base name "Test_Backups" 
+Processing exclusion file: "F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Test_Directory\Backup_Suite\backup_exclusions.txt" 
+Exclusion file found. Reading exclusions... 
+Processing exclusion line: "1ATestExclude" 
+Adding exclusion path: "1ATestExclude" 
+Processing exclusion line: "*.txt" 
+Adding exclusion path: "*.txt" 
+Final Robocopy Directory exclusions:  /XD "1ATestExclude"  /XD "*.txt"  
+Final Robocopy File exclusions:  
+Timestamp acquired: 20250410161603.459000-240 
+=== Executing Robocopy command: === 
+robocopy "F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Test_Directory" "F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Test_Backups\Temp_Copy_2025-04-10_16-16-03" /E /COPY:DAT  /XD "1ATestExclude"  /XD "*.txt"   /XD "Backup_Suite" /R:1 /W:1 /NFL /NJH /NJS /ETA 
+SUCCESS: Zip file created at "F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Test_Backups\Backup_2025-04-10_16-16-03.zip" 
 Temporary folder cleanup completed 
-Checking if count (4) is greater than 3... 
-Oldest backup identified as: Backup_2025-04-09_20-18-50.zip 
-Preparing to delete: "F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Backups\Backup_2025-04-09_20-18-50.zip" 
-Successfully rotated old backup: "F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Backups\Backup_2025-04-09_20-18-50.zip" 
-Backup process complete. Result: F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Backups\Backup_2025-04-09_20-31-06.zip 
+Starting backup rotation check... 
+DEBUG: Found 3 backup files. Volumes to keep: 2 
+DEBUG: Need to delete 1 backups. 
+DEBUG: Deleting backup: "F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Test_Backups\Backup_2025-04-10_16-06-17.zip" 
+DEBUG: Deleted successfully: "Backup_2025-04-10_16-06-17.zip" 
+Backup process complete. Result: F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite\Test_Backups\Backup_2025-04-10_16-16-03.zip 

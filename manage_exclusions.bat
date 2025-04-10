@@ -12,7 +12,6 @@ set "temp_file=%exclusion_file%.tmp"
 echo Exclusion file: %exclusion_file% >> "%debug_log%"
 echo Backup script: %backup_script% >> "%debug_log%"
 
-
 :: Ensure the exclusion file exists, create if not
 if not exist "%exclusion_file%" (
     echo Creating empty exclusion file: "%exclusion_file%" >> "%debug_log%"
@@ -35,14 +34,14 @@ echo [ACTIONS]
 echo   ADD [pattern]    - Add exclusion pattern
 echo   REMOVE [pattern] - Remove exclusion pattern
 echo   LIST             - List current exclusions
+echo   CONFIG           - Configure backup settings
 echo   RUN              - Run backup now
 echo   HELP             - Show usage instructions
 echo   EXIT             - Quit this menu
 echo.
 echo [PATTERN EXAMPLES]
-echo   ADD node_modules/  - Exclude directory
+echo   ADD node_modules   - Exclude directory (case-sensitive)
 echo   ADD *.tmp          - Exclude all .tmp files
-echo   ADD build\         - Exclude build directory
 echo ==============================================
 echo ===================================
 echo.
@@ -59,7 +58,6 @@ for /f "tokens=1,*" %%A in ("%user_input%") do (
     set "command=%%A"
     set "item=%%B"
 )
-echo Parsed command: "%command%", item: "!item!" >> "%debug_log%"
 
 :: Explicitly check if command is valid before proceeding
 set "valid_command=0"
@@ -69,14 +67,15 @@ if /i "%command%"=="REMOVE" set "valid_command=1"
 if /i "%command%"=="INCLUDE" set "valid_command=1" & set "command=REMOVE"
 if /i "%command%"=="HELP" set "valid_command=1"
 if /i "%command%"=="LIST" set "valid_command=1"
+if /i "%command%"=="CONFIG" set "valid_command=1"
 if /i "%command%"=="RUN" set "valid_command=1"  :: Added RUN
 if /i "%command%"=="BACKUP" set "valid_command=1" & set "command=RUN" :: Synonym
 if /i "%command%"=="EXIT" set "valid_command=1"
 if /i "%command%"=="QUIT" set "valid_command=1" & set "command=EXIT"
 
 if "%valid_command%"=="0" (
-    echo Invalid command "%command%". Please use ADD, REMOVE, LIST, RUN, or EXIT. >> "%debug_log%"
-    echo Invalid command "%command%". Please use ADD, REMOVE, LIST, RUN, or EXIT.
+    echo Invalid command "%command%". Please use ADD, REMOVE, LIST, CONFIG, RUN, or EXIT. >> "%debug_log%"
+    echo Invalid command "%command%". Please use ADD, REMOVE, LIST, CONFIG, RUN, or EXIT.
     echo.
     pause
     goto :menu
@@ -87,6 +86,7 @@ echo Routing valid command "%command%" with item "!item!" >> "%debug_log%"
 if /i "%command%"=="ADD" goto :add_action
 if /i "%command%"=="REMOVE" goto :remove_action
 if /i "%command%"=="LIST" goto :list_action
+if /i "%command%"=="CONFIG" goto :config_action
 if /i "%command%"=="RUN" goto :run_backup_action  :: Added RUN route
 if /i "%command%"=="HELP" goto :help_action
 if /i "%command%"=="EXIT" goto :quit
@@ -100,6 +100,22 @@ goto :menu
 :: ================== LIST Action (Corrected with GOTO) ==================
 :list_action
 echo DEBUG: Reached list_action >> "%debug_log%"
+
+:: Read config settings
+set "config_file=%~dp0config_settings.txt"
+set "volumes_to_keep="
+set "base_name="
+for /f "usebackq delims=" %%L in ("%config_file%") do (
+    for /f "tokens=1,* delims==" %%A in ("%%L") do (
+        if /i "%%A"=="backup_volumes_to_keep" set "volumes_to_keep=%%B"
+        if /i "%%A"=="backup_base_name" set "base_name=%%B"
+    )
+)
+
+echo --- Current Backup Settings ---
+echo   Volumes to Keep: !volumes_to_keep!
+echo   Backup Base Name: !base_name!
+echo.
 echo --- Current Exclusions ---
 if not exist "%exclusion_file%" goto :list_action_file_not_found
 
@@ -225,6 +241,7 @@ echo.
 pause
 goto :menu
 
+
 :: ================== REMOVE Action ==================
 :remove_action
 echo DEBUG: Reached remove_action >> "%debug_log%"
@@ -329,23 +346,73 @@ pause
 goto :menu
 
 
-:: ================== QUIT ==================
-:help_action
-echo.
-echo [EXCLUSION PATTERN HELP]
-echo   Directory: End with / or \ (e.g. node_modules/)
-echo   File: Specific name or wildcard (e.g. *.log)
-echo   Paths: Can be relative or absolute
-echo   Note: The Backup_Suite folder is always excluded
+:: ================== CONFIG Action ==================
+:config_action
+echo DEBUG: Reached config_action >> "%debug_log%"
+set "config_file=%~dp0config_settings.txt"
+echo --- Configure Backup Settings ---
+echo 1. backup_volumes_to_keep
+echo 2. backup_base_name
+set /p "config_choice=Enter the number of the setting to change: "
+
+:: Ensure config file exists with default content if not present or empty
+if not exist "%config_file%" (
+    echo Creating config file with default settings...
+    echo # Backup Settings > "%config_file%"
+    echo backup_volumes_to_keep=3 >> "%config_file%"
+    echo backup_base_name=Backup >> "%config_file%"
+)
+
+:: Read existing content into variables
+set "volumes_to_keep="
+set "base_name="
+for /f "usebackq delims=" %%L in ("%config_file%") do (
+    for /f "tokens=1,* delims==" %%A in ("%%L") do (
+        if /i "%%A"=="backup_volumes_to_keep" set "volumes_to_keep=%%B"
+        if /i "%%A"=="backup_base_name" set "base_name=%%B"
+    )
+)
+
+:: Prompt for new values and update
+if "%config_choice%"=="1" (
+    set /p "new_value=Enter new value for backup_volumes_to_keep [!volumes_to_keep!]: "
+    set "volumes_to_keep=!new_value!"
+    echo Updated backup_volumes_to_keep to !new_value!.
+) else if "%config_choice%"=="2" (
+    set /p "new_value=Enter new value for backup_base_name [!base_name!]: "
+    set "base_name=!new_value!"
+    echo Updated backup_base_name to !new_value!.
+) else (
+    echo Invalid choice.
+    goto :config_action_end
+)
+
+:: Write updated settings back to config file
+(
+    echo # Backup Settings
+    if defined volumes_to_keep (
+        echo backup_volumes_to_keep=!volumes_to_keep!
+    ) else (
+        echo backup_volumes_to_keep=3
+    )
+    if defined base_name (
+        echo backup_base_name=!base_name!
+    ) else (
+        echo backup_base_name=Backup
+    )
+) > "%config_file%.tmp"
+
+:: Replace original file with updated content
+move /y "%config_file%.tmp" "%config_file%" > nul
+
+:config_action_end
 echo.
 pause
 goto :menu
 
+: ================== END ==================
 :quit
-echo DEBUG: Reached quit >> "%debug_log%"
-echo Exiting script.
-goto :eof
-
-:: ================== END ==================
+    echo Exiting manage_exclusions.bat. Goodbye!
+    exit /b 0
 :eof
 endlocal

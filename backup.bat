@@ -4,9 +4,9 @@ setlocal enabledelayedexpansion
 :: === Initialize Logging ===
 set "log_file=%~dp0backup_debug.log"
 echo === Backup Started: %DATE% %TIME% === > "%log_file%"
-echo Script version: [V11 - Configurable Backup] >> "%log_file%"
+echo Script version: [V2.5 - Configurable Backup] >> "%log_file%"
 
-echo Starting script... [V11 - Configurable Backup]
+echo Starting script... [V2.5 - Configurable Backup]
 
 :: === Path Calculations ===
 set "script_dir=%~dp0"
@@ -22,50 +22,75 @@ echo Target Source Directory (Parent): "%target_source_dir%"
 :: Calculate the Grandparent Directory (Parent of target_source_dir)
 set "grandparent_dir=%target_source_dir%"
 for %%A in ("%grandparent_dir%") do set "grandparent_dir=%%~dpA"
+:: Remove trailing slash from grandparent dir path
+set "grandparent_dir=%grandparent_dir:~0,-1%"
 echo Grandparent Directory: "%grandparent_dir%"
 
-:: Define Backup Folder (sibling to target_source_dir)
-set "backup_folder=%grandparent_dir%Backups"
-echo Backup destination base folder: "%backup_folder%"
-
+:: Backup Folder definition moved below config reading
 :: === Configuration Settings ===
 set "config_file=%script_dir%config_settings.txt"
 set "exclusion_file=%script_dir%backup_exclusions.txt"
 
 :: Default backup retention if not configured
 set "backup_volumes_to_keep=2"
+set "backup_base_name=Backups" :: Default backup directory base name
 
 :: Read config file if exists
 if exist "%config_file%" (
     echo Reading configuration from "%config_file%" >> "%log_file%"
-    for /f "tokens=1,2 delims==" %%A in ('type "%config_file%" ^| findstr /i "backup_volumes_to_keep"') do (
-        set "%%A=%%B"
+    for /f "usebackq tokens=1,* delims==" %%A in ("%config_file%") do (
+        set "raw_key=%%A"
+        set "raw_value=%%B"
+        :: Enhanced trimming for key and value
+        for /f "tokens=* delims= 	" %%K in ("!raw_key!") do set "key=%%K"
+        for /f "tokens=* delims= 	" %%V in ("!raw_value!") do set "value=%%V"
+        :: Remove any remaining leading/trailing spaces
+        set "key=!key: =!"
+        set "value=!value: =!"
+        echo DEBUG: Raw config line: %%A=%%B >> "%log_file%"
+        echo DEBUG: Trimmed Config Key: '!key!', Value: '!value!' >> "%log_file%"
+        echo DEBUG: Trimmed Config Key: '!key!', Value: '!value!'
+        
+        :: Check if the key is one we care about and assign (case-insensitive)
+        if /i "!key!"=="backup_volumes_to_keep" (
+            echo DEBUG: Key 'backup_volumes_to_keep' found. Setting value to '!value!' >> "%log_file%"
+            set "backup_volumes_to_keep=!value!"
+        )
+        if /i "!key!"=="backup_base_name" (
+            echo DEBUG: Key 'backup_base_name' found. Setting value to '!value!' >> "%log_file%"
+            set "backup_base_name=!value!"
+        )
     )
 )
 
-echo Backup volumes to keep: %backup_volumes_to_keep% >> "%log_file%"
+echo Backup volumes to keep: !backup_volumes_to_keep! >> "%log_file%"
 echo Exclusion list file: "%exclusion_file%"
+
+:: Define Backup Folder (sibling to target_source_dir) using potentially configured name
+set "backup_folder=%grandparent_dir%\!backup_base_name!"
+:: Normalize path by replacing any double backslashes
+set "backup_folder=!backup_folder:\\=\!"
+echo Backup destination base folder: "%backup_folder%" using base name "!backup_base_name!" >> "%log_file%"
+echo Backup destination base folder: "%backup_folder%" using base name "!backup_base_name!"
 
 :: === Build Robocopy exclusion arguments ===
 set "robocopy_xd_args="
 set "robocopy_xf_args="
+
+:: === Process Exclusion File ===
+echo Processing exclusion file: "%exclusion_file%" >> "%log_file%"
 if exist "%exclusion_file%" (
-    echo Reading exclusions from "%exclusion_file%"...
-    for /f "usebackq delims=" %%L in ("%exclusion_file%") do (
-        echo Processing exclusion pattern: "%%L" >> "%log_file%"
-        echo Adding exclusion from file: "%%L"
-        :: Check if pattern ends with / or \ (directory)
-        echo %%L|findstr /r "[\\/]$" >nul
-        if !errorlevel! equ 0 (
-            set "robocopy_xd_args=!robocopy_xd_args! /XD "%%L""
-            echo Classified as directory exclusion >> "%log_file%"
-        ) else (
-            set "robocopy_xf_args=!robocopy_xf_args! /XF "%%L""
-            echo Classified as file exclusion >> "%log_file%"
-        )
-    )
+ echo Exclusion file found. Reading exclusions... >> "%log_file%"
+ for /F "tokens=*" %%e in (%exclusion_file%) DO (
+  echo Processing exclusion line: "%%e" >> "%log_file%"
+  set "exclude_path=%%e"
+  if not "!exclude_path!"=="" (
+   echo Adding exclusion path: "!exclude_path!" >> "%log_file%"
+   set "robocopy_xd_args=!robocopy_xd_args! /XD "!exclude_path!" "
+  )
+ )
 ) else (
-    echo Exclusion file not found. Proceeding without file-based exclusions. >> "%log_file%"
+ echo Exclusion file not found. Skipping exclusion processing. >> "%log_file%"
 )
 echo Final Robocopy Directory exclusions: %robocopy_xd_args% >> "%log_file%"
 echo Final Robocopy File exclusions: %robocopy_xf_args% >> "%log_file%"
@@ -73,7 +98,7 @@ echo Final Robocopy File exclusions: %robocopy_xf_args% >> "%log_file%"
 
 :: Create Backups folder if it doesn't exist
 if not exist "%backup_folder%" (
-    echo Creating Backups folder: "%backup_folder%"
+    echo Creating backup base folder: "%backup_folder%"
     mkdir "%backup_folder%"
     if errorlevel 1 (
       echo ERROR: Failed to create backup folder. Check permissions. >> "%log_file%"
@@ -106,7 +131,7 @@ set "timestamp=%YYYY%-%MM%-%DD%_%HH%-%MIN%-%SS%"
 
 :: Create backup name with timestamp (Using script name, which is now 'backup')
 set "zip_file=%backup_folder%\Backup_%timestamp%.zip"
-set "copy_dir=%backup_folder%\backup_copy_%timestamp%" :: Simpler temp name
+set "copy_dir=%backup_folder%\Temp_Copy_%timestamp%" :: Consistent temp name
 
 :: Prepare source path for Robocopy (Already done as target_source_dir)
 set "robosource=%target_source_dir%"
@@ -118,6 +143,8 @@ if exist "%copy_dir%\" rmdir /S /Q "%copy_dir%"
 echo Copying files from "%robosource%" to "%copy_dir%" using Robocopy...
 echo *** Robocopy progress: Shows directories, per-file %%, ETA ***
 :: *** Added /XD "Backup_Suite" to always exclude the script's own folder ***
+echo === Executing Robocopy command: === >> "%log_file%"
+echo robocopy "%robosource%" "%copy_dir%" /E /COPY:DAT %robocopy_xd_args% %robocopy_xf_args% /XD "Backup_Suite" /R:1 /W:1 /NFL /NJH /NJS /ETA >> "%log_file%"
 robocopy "%robosource%" "%copy_dir%" /E /COPY:DAT %robocopy_xd_args% %robocopy_xf_args% /XD "Backup_Suite" /R:1 /W:1 /NFL /NJH /NJS /ETA
 set RBERROR=%ERRORLEVEL%
 echo *** Robocopy finished with Exit Code: %RBERROR% ***
@@ -198,63 +225,51 @@ goto :delete_temp_ok
 
 
 :: === Perform Cleanup Section ===
+:: === Perform Cleanup Section ===
 :perform_cleanup
 echo Reached backup cleanup section...
+echo Starting backup rotation check... >> "%log_file%"
+echo Starting backup rotation check...
 
-:: Count files using a separate command to avoid loop issues
-set "backup_pattern=%backup_folder%\Backup_*.zip"
-set count=0
-for /f %%C in ('dir /b "%backup_pattern%" 2^>nul ^| find /c /v ""') do set count=%%C
-echo Found %count% backup files matching pattern in "%backup_folder%"
+set "backup_count=0"
+set "delete_count=0"
+set "backups_to_delete="
 
-:: If there are more than configured backups, delete the oldest ones
-set /a "delete_threshold=%backup_volumes_to_keep%"
-echo Checking if count (%count%) is greater than %delete_threshold%... >> "%log_file%"
-echo Checking if count (%count%) is greater than %delete_threshold%...
-if %count% GTR %delete_threshold% goto :delete_oldest_check
-goto :delete_oldest_skip
+:: Get list of backup files, sorted by name (which is by date)
+for /f "delims=" %%f in ('dir /b /a-d "%backup_folder%\Backup_*.zip"') do (
+    set /a backup_count+=1
+    set "backups[!backup_count!]=%%f"
+)
 
-:delete_oldest_check
-    echo More than 2 backups found. Identifying oldest...
-    set "oldest_backup="
-    for /f "delims=" %%F in ('dir /b /o:d "%backup_pattern%" 2^>nul') do (
-        set "oldest_backup=%%F"
-        goto :got_oldest_backup_v10
+echo DEBUG: Found !backup_count! backup files. Volumes to keep: %backup_volumes_to_keep% >> "%log_file%"
+echo DEBUG: Found !backup_count! backup files. Volumes to keep: %backup_volumes_to_keep%
+
+:: Check if cleanup is needed
+if !backup_count! GTR %backup_volumes_to_keep% (
+    set /a delete_count=!backup_count! - %backup_volumes_to_keep%
+    echo DEBUG: Need to delete !delete_count! backups. >> "%log_file%"
+    echo DEBUG: Need to delete !delete_count! backups.
+
+    :: Loop through backups to delete (oldest ones)
+    for /l %%i in (1,1,!delete_count!) do (
+        set "backup_file_name=!backups[%%i]!"
+        set "backup_file_path=%backup_folder%\!backup_file_name!"
+        echo DEBUG: Deleting backup: "!backup_file_path!" >> "%log_file%"
+        echo Deleting old backup: "!backup_file_name!"
+
+        del /f /q "!backup_file_path!" >nul 2>&1
+        if !errorlevel! neq 0 (
+            echo WARNING: Delete failed for "!backup_file_name!" with error code !errorlevel! >> "%log_file%"
+        ) else (
+            echo DEBUG: Deleted successfully: "!backup_file_name!" >> "%log_file%"
+        )
     )
-    :got_oldest_backup_v10
-    if defined oldest_backup goto :delete_oldest_do
-    goto :delete_oldest_not_found
+) else (
+    echo DEBUG: No cleanup needed. Backup count is within limit. >> "%log_file%"
+    echo DEBUG: No cleanup needed. Backup count is within limit.
+)
 
-:delete_oldest_not_found
-    echo WARN: Could not identify oldest backup file to delete (Count was %count%).
-    goto :delete_oldest_done
-
-:delete_oldest_do
-    echo Oldest backup identified as: !oldest_backup! >> "%log_file%"
-    set "file_to_delete=%backup_folder%\!oldest_backup!"
-    echo Preparing to delete: "!file_to_delete!" >> "%log_file%"
-    echo Preparing to delete: "!file_to_delete!"
-    del "!file_to_delete!"
-    if errorlevel 1 goto :delete_oldest_failed
-    goto :delete_oldest_success
-
-:delete_oldest_failed
-    echo ERROR: Failed to delete old backup (Code %ERRORLEVEL%). File may be locked. >> "%log_file%"
-    echo ERRORLEVEL %ERRORLEVEL%: Failed to delete "!file_to_delete!". Check permissions or lock.
-    goto :delete_oldest_done
-
-:delete_oldest_success
-    echo Successfully rotated old backup: "!file_to_delete!" >> "%log_file%"
-    echo Successfully deleted "!file_to_delete!".
-    goto :delete_oldest_done
-
-:delete_oldest_skip
-    echo Backup count %count% is not greater than %delete_threshold%. No deletion needed. >> "%log_file%"
-    echo Backup count %count% is not greater than %delete_threshold%. No deletion needed.
-
-:delete_oldest_done
-    echo Finished backup rotation check.
-
+echo Finished backup rotation check.
 
 echo Backup process complete. Result: %zip_file% >> "%log_file%"
 echo Backup process complete. Last operation resulted in: %zip_file%
