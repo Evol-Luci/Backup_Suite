@@ -140,16 +140,16 @@ echo DEBUG: Reached add_action >> "%debug_log%"
 if not defined item goto :add_action_no_item
 
 :: Validate pattern doesn't contain invalid characters
-echo !item!|findstr /r "[][<>|?*]" >nul
-if !errorlevel! equ 0 (
-    echo ERROR: Invalid characters in pattern "!item!" >> "%debug_log%"
-    echo ERROR: Pattern cannot contain: []<>|?*
-    goto :add_action_invalid
-)
+::echo !item!|findstr /r "[][<>|?*]" >nul
+::if !errorlevel! equ 0 (
+::    echo ERROR: Invalid characters in pattern "!item!" >> "%debug_log%"
+::    echo ERROR: Pattern cannot contain: []<>|?*
+::    goto :add_action_invalid
+::)
 
 echo DEBUG: ADD action - item IS defined: "!item!" >> "%debug_log%"
 :: Additional validation for paths
-if exist "!item!" (
+if exist ""!item!"" (
     echo DEBUG: Path exists, adding as absolute exclusion >> "%debug_log%"
 ) else (
     echo DEBUG: Adding as pattern match >> "%debug_log%"
