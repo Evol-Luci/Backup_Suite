@@ -1,0 +1,14 @@
+== Starting manage_exclusions.bat @ 19:36:19.22 == 
+Exclusion file: F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite_Project\Test_Directory\Backup_Suite\Settings\backup_exclusions.txt 
+Backup script: F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite_Project\Test_Directory\Backup_Suite\backup.bat 
+User input: "list" 
+Routing valid command "list" with item "" 
+DEBUG: Reached list_action 
+DEBUG: file_is_empty flag = 0 
+DEBUG: File is not empty, listing with findstr /n... 
+User input: "run" 
+Routing valid command "run" with item "" 
+DEBUG: Reached run_backup_action 
+Calling "F:\Documents\Obsidian_Vault\OB_Vault1\Programming\Backup_Suite_Project\Test_Directory\Backup_Suite\backup.bat"... 
+Returned control to exclusion manager. 
+Returned control to exclusion manager. 
