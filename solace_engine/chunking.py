@@ -14,6 +14,7 @@ _GEAR = tuple(
     for index in range(256)
 )
 _READ_SIZE = 65536
+_WHOLE_FILE_LIMIT = 1048576
 
 
 def _validate_sizes(min_size: int, average_size: int, max_size: int) -> None:
@@ -58,6 +59,12 @@ def iter_file_chunks(
     """Read a file in fixed-size blocks and yield content-defined chunks."""
     _validate_sizes(min_size, average_size, max_size)
     with path.open("rb") as stream:
+        size = stream.seek(0, 2)
+        stream.seek(0)
+        if size <= _WHOLE_FILE_LIMIT:
+            if size:
+                yield stream.read(size)
+            return
         yield from _iter_chunks(iter(lambda: stream.read(_READ_SIZE), b""), min_size, average_size, max_size)
 
 
@@ -69,4 +76,8 @@ def split_bytes(
 ) -> list[bytes]:
     """Split in-memory data with the same boundaries as iter_file_chunks."""
     _validate_sizes(min_size, average_size, max_size)
+    if not data:
+        return []
+    if len(data) <= _WHOLE_FILE_LIMIT:
+        return [data]
     return list(_iter_chunks((data,), min_size, average_size, max_size))

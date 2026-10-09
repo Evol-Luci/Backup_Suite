@@ -31,8 +31,32 @@ class ChunkingTests(unittest.TestCase):
             path.write_bytes(data)
             self.assertEqual(list(iter_file_chunks(path)), [data])
 
+    def test_input_up_to_one_mib_is_one_whole_chunk(self):
+        for size in (1048575, 1048576):
+            with self.subTest(size=size):
+                data = sample_data(size)
+                memory_chunks = split_bytes(data)
+                self.assertEqual(len(memory_chunks), 1)
+                self.assertEqual(memory_chunks[0], data)
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "whole"
+                    path.write_bytes(data)
+                    file_chunks = list(iter_file_chunks(path))
+                    self.assertEqual(len(file_chunks), 1)
+                    self.assertEqual(file_chunks[0], data)
+
+    def test_input_immediately_above_one_mib_is_chunked(self):
+        data = sample_data(1048577)
+        chunks = split_bytes(data)
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual(b"".join(chunks), data)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chunked"
+            path.write_bytes(data)
+            self.assertEqual(list(iter_file_chunks(path)), chunks)
+
     def test_chunks_reconstruct_input_and_obey_size_bounds(self):
-        data = sample_data(40_000)
+        data = sample_data(1048577)
         chunks = split_bytes(data, min_size=128, average_size=256, max_size=512)
         self.assertGreater(len(chunks), 1)
         self.assertEqual(b"".join(chunks), data)
@@ -40,7 +64,7 @@ class ChunkingTests(unittest.TestCase):
         self.assertTrue(0 < len(chunks[-1]) <= 512)
 
     def test_fixed_content_has_repeatable_boundaries_across_entry_points(self):
-        data = sample_data(100_000)
+        data = sample_data(1048577)
         parameters = {"min_size": 256, "average_size": 512, "max_size": 1024}
         expected = split_bytes(data, **parameters)
         self.assertGreater(len(expected), 1)
@@ -51,8 +75,9 @@ class ChunkingTests(unittest.TestCase):
             self.assertEqual(list(iter_file_chunks(path, **parameters)), expected)
 
     def test_maximum_forces_cuts_in_repetitive_content(self):
-        chunks = split_bytes(b"x" * 1000, min_size=64, average_size=128, max_size=256)
-        self.assertEqual(b"".join(chunks), b"x" * 1000)
+        data = b"x" * 1048577
+        chunks = split_bytes(data, min_size=64, average_size=128, max_size=256)
+        self.assertEqual(b"".join(chunks), data)
         self.assertTrue(all(64 <= len(chunk) <= 256 for chunk in chunks[:-1]))
         self.assertTrue(all(len(chunk) <= 256 for chunk in chunks))
 
