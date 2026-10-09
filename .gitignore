@@ -1,0 +1,16 @@
+.worktrees/
+
+# Local runtime state and generated files
+.claude/settings.local.json
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+Debug/
+Settings/
+.solace_vault/
+test_data*/
+test_write_permission.txt
+*.lnk
