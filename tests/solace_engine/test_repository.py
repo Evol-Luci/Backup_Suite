@@ -179,6 +179,17 @@ class RepositoryTests(unittest.TestCase):
         self.assertFalse(report.ok)
         self.assertTrue(report.errors)
 
+    def test_checkpoint_capture_preserves_corrupt_object_error(self):
+        (self.project / "a").write_bytes(b"content")
+        checkpoint = self.repo.create_checkpoint("created")
+        digest = self.repo.get_file_entries(checkpoint.id)[0].chunk_digests[0]
+        self.repo.object_store._object_path(digest).write_bytes(b"corrupt")
+
+        with self.assertRaisesRegex(CorruptObject, "failed digest verification"):
+            self.repo.create_checkpoint("retry")
+
+        self.assertEqual([item.id for item in self.repo.list_checkpoints()], [checkpoint.id])
+
     def test_manifest_digest_mismatch_is_reported(self):
         (self.project / "a").write_bytes(b"content")
         checkpoint = self.repo.create_checkpoint("created")

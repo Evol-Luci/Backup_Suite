@@ -156,6 +156,8 @@ class ProjectRepository:
                         try:
                             digest, size, chunks = self.object_store.put_file(
                                 Path(f"/proc/self/fd/{file_fd}"))
+                        except CorruptObject:
+                            raise
                         except RepositoryError as error:
                             raise RepositoryError(f"file changed during checkpoint capture: {relative}; retry when writes stop") from error
                         finished = os.fstat(file_fd)
