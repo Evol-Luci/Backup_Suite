@@ -63,6 +63,15 @@ class ObjectStoreTests(unittest.TestCase):
         self.assertFalse(self.object_path(digest).exists())
         self.assertEqual(list((self.root / "store" / "objects").rglob("*.tmp")), [])
 
+    def test_interrupted_file_sync_cleans_temporary_file_before_publish(self):
+        data = b"write completed but fsync failed"
+        digest = hashlib.sha256(data).hexdigest()
+        with patch("solace_engine.object_store.os.fsync", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.store.put_bytes(data)
+        self.assertFalse(self.object_path(digest).exists())
+        self.assertEqual(list((self.root / "store" / "objects").rglob("*.tmp")), [])
+
     def test_file_at_whole_object_boundary_and_empty_file(self):
         for data in (b"", b"a" * 1048576):
             with self.subTest(size=len(data)):
