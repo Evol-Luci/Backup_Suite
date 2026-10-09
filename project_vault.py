@@ -699,6 +699,7 @@ class ProjectVault:
         """
         Applies selected diffs (merges files from temp_dir to project).
         diffs: List of dicts checks from compare_snapshot.
+        temp_dir: Optional extraction directory to remove after applying the merge.
         """
         try:
             for item in diffs:
@@ -717,7 +718,7 @@ class ProjectVault:
                         else:
                              os.remove(target_path)
         finally:
-            if os.path.exists(temp_dir):
+            if temp_dir and os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
 
     def export_branch_head(self, branch_name, destination_path, progress_callback=None):
