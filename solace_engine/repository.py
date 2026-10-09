@@ -28,14 +28,20 @@ class ProjectRepository:
     """Capture project trees into one project's private checkpoint store."""
 
     def __init__(self, project_root: Path, store_dir: Path):
-        self.project_root = Path(project_root).absolute()
-        self.store_dir = Path(store_dir).absolute()
-        if not self.project_root.is_dir() or self.project_root.is_symlink():
+        requested_root = Path(project_root)
+        if not requested_root.is_dir() or requested_root.is_symlink():
             raise InvalidProjectPath(f"project directory is unavailable: {project_root}")
+        # Resolve user-supplied aliases once; traversal below still never follows
+        # symlinks found inside the project.
+        self.project_root = requested_root.resolve()
+        self.store_dir = Path(store_dir).resolve()
         self._project_identity = self.project_root.stat()
         if self.store_dir == self.project_root:
             raise InvalidProjectPath("store directory cannot be the project root")
         self.store_dir.mkdir(parents=True, exist_ok=True)
+        self._store_identity = self.store_dir.stat()
+        if os.path.samestat(self._project_identity, self._store_identity):
+            raise InvalidProjectPath("store directory cannot be the project root")
         self.object_store = ObjectStore(self.store_dir)
         self.database_path = self.store_dir / "checkpoints.sqlite3"
         with self._connect() as connection:
@@ -80,6 +86,7 @@ class ProjectRepository:
             connection.execute("PRAGMA busy_timeout = 30000")
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA synchronous = FULL")
             try:
                 yield connection
                 connection.commit()
@@ -116,6 +123,8 @@ class ProjectRepository:
                 if self._excluded(path, relative, exclusions):
                     continue
                 metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if stat.S_ISDIR(metadata.st_mode) and os.path.samestat(metadata, self._store_identity):
+                    continue
                 if stat.S_ISLNK(metadata.st_mode):
                     target = os.readlink(name, dir_fd=directory_fd).encode("utf-8", "surrogateescape")
                     require_identity(metadata, os.stat(name, dir_fd=directory_fd,
@@ -139,10 +148,20 @@ class ProjectRepository:
                     try:
                         opened = os.fstat(file_fd)
                         require_identity(metadata, opened, relative)
+                        if (metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns) != (
+                                opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns):
+                            raise RepositoryError(f"file changed during checkpoint capture: {relative}; retry when writes stop")
                         # The proc fd path remains attached to this inode if another
                         # agent replaces the directory entry during chunking.
-                        digest, size, chunks = self.object_store.put_file(
-                            Path(f"/proc/self/fd/{file_fd}"))
+                        try:
+                            digest, size, chunks = self.object_store.put_file(
+                                Path(f"/proc/self/fd/{file_fd}"))
+                        except RepositoryError as error:
+                            raise RepositoryError(f"file changed during checkpoint capture: {relative}; retry when writes stop") from error
+                        finished = os.fstat(file_fd)
+                        if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (
+                                finished.st_size, finished.st_mtime_ns, finished.st_ctime_ns):
+                            raise RepositoryError(f"file changed during checkpoint capture: {relative}; retry when writes stop")
                     finally:
                         os.close(file_fd)
                     entries.append(FileEntry(relative, "file", metadata.st_mode & 0o777,
@@ -260,7 +279,7 @@ class ProjectRepository:
         paths = set()
         for entry in entries:
             parts = entry.path.split("/")
-            if (not entry.path or entry.path.startswith("/") or "\\" in entry.path or
+            if (not entry.path or entry.path.startswith("/") or "\0" in entry.path or
                     any(part in ("", ".", "..") for part in parts)):
                 raise RepositoryError(f"unsafe checkpoint path: {entry.path}")
             if entry.kind not in ("file", "symlink"):

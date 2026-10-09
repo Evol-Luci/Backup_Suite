@@ -15,10 +15,33 @@ _DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class ObjectStore:
-    """Store immutable bytes beneath one project's store directory."""
+    """Store immutable bytes beneath one project's store directory.
+
+    Successful writes fsync the object, its shard, and directory ancestry before
+    the repository commits references with SQLite synchronous=FULL. This assumes
+    a local filesystem and device that honor fsync. Restore publication provides
+    atomic visibility, but does not yet promise power-loss durability.
+    """
 
     def __init__(self, store_dir: Path):
-        self.store_dir = Path(store_dir)
+        self.store_dir = Path(store_dir).resolve()
+        self.store_dir.mkdir(parents=True, exist_ok=True)
+        # Persist a newly created store and every potentially new ancestor. Sync
+        # even existing directories: another process may just have created them.
+        self._sync_directories((self.store_dir, *self.store_dir.parents))
+
+    @staticmethod
+    def _sync_directories(directories) -> None:
+        for directory in directories:
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+    def _sync_object_directories(self, directory_fd: int) -> None:
+        os.fsync(directory_fd)
+        self._sync_directories((self.store_dir / "objects", self.store_dir))
 
     def _object_path(self, digest: str) -> Path:
         if not isinstance(digest, str) or _DIGEST_PATTERN.fullmatch(digest) is None:
@@ -56,6 +79,8 @@ class ObjectStore:
             fcntl.flock(directory_fd, fcntl.LOCK_EX)
             if destination.exists():
                 self.read_object(digest)
+                # A previous writer may have failed after rename, before sync.
+                self._sync_object_directories(directory_fd)
                 return digest
             temporary = None
             try:
@@ -71,7 +96,7 @@ class ObjectStore:
                 if hashlib.sha256(temporary.read_bytes()).hexdigest() != digest:
                     raise CorruptObject(f"temporary object {digest} failed digest verification")
                 os.replace(temporary, destination)
-                os.fsync(directory_fd)
+                self._sync_object_directories(directory_fd)
                 return digest
             finally:
                 if temporary is not None:

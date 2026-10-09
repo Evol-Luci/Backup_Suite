@@ -103,9 +103,11 @@ class RepositoryTests(unittest.TestCase):
             return original_put_file(path)
 
         with patch.object(self.repo.object_store, "put_file", side_effect=swap_before_read):
-            checkpoint = self.repo.create_checkpoint("swapped")
-        entry = self.repo.get_file_entries(checkpoint.id)[0]
-        self.assertEqual(self.repo.object_store.read_object(entry.chunk_digests[0]), b"inside")
+            with self.assertRaisesRegex(RepositoryError, "changed"):
+                self.repo.create_checkpoint("swapped")
+        self.assertEqual(self.repo.list_checkpoints(), [])
+        objects = [path.read_bytes() for path in (self.store / "objects").glob("*/*")]
+        self.assertEqual(objects, [b"inside"])
 
     def test_directory_swap_before_open_is_rejected(self):
         child = self.project / "sub"

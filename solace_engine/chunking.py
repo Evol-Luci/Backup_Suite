@@ -1,8 +1,11 @@
 """Deterministic, bounded FastCDC chunking for checkpoint file content."""
 
 import hashlib
+import os
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+
+from .errors import RepositoryError
 
 
 # Versioned seed and index define a fixed gear table on every Python runtime.
@@ -56,16 +59,30 @@ def iter_file_chunks(
     average_size: int = 262144,
     max_size: int = 1048576,
 ) -> Iterator[bytes]:
-    """Read a file in fixed-size blocks and yield content-defined chunks."""
+    """Yield bounded chunks, rejecting observed changes before completion.
+
+    Callers must exhaust the iterator before publishing its result. Metadata
+    checks detect ordinary concurrent writes; this is not a filesystem snapshot
+    or a defense against a privileged writer falsifying filesystem metadata.
+    """
     _validate_sizes(min_size, average_size, max_size)
     with path.open("rb") as stream:
-        size = stream.seek(0, 2)
-        stream.seek(0)
-        if size <= _WHOLE_FILE_LIMIT:
-            if size:
-                yield stream.read(size)
-            return
-        yield from _iter_chunks(iter(lambda: stream.read(_READ_SIZE), b""), min_size, average_size, max_size)
+        before = os.fstat(stream.fileno())
+        consumed = 0
+        if before.st_size <= _WHOLE_FILE_LIMIT:
+            data = stream.read(_WHOLE_FILE_LIMIT + 1)
+            consumed = len(data)
+            if data:
+                yield data
+        else:
+            for chunk in _iter_chunks(iter(lambda: stream.read(_READ_SIZE), b""),
+                                      min_size, average_size, max_size):
+                consumed += len(chunk)
+                yield chunk
+        after = os.fstat(stream.fileno())
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_size, after.st_mtime_ns, after.st_ctime_ns) or consumed != before.st_size:
+            raise RepositoryError(f"file changed during checkpoint capture: {path}; retry when writes stop")
 
 
 def split_bytes(
