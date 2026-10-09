@@ -18,6 +18,19 @@ def _safe_extract(zf: zipfile.ZipFile, dest: str) -> int:
     zf.extractall(dest)
     return len(zf.namelist())
 
+
+def _files_equal(path_a: str, path_b: str, chunk_size: int = 64 * 1024) -> bool:
+    """Compare file bytes with bounded memory use and no metadata-based cache."""
+    with open(path_a, "rb") as file_a, open(path_b, "rb") as file_b:
+        while True:
+            chunk_a = file_a.read(chunk_size)
+            chunk_b = file_b.read(chunk_size)
+            if chunk_a != chunk_b:
+                return False
+            if not chunk_a:
+                return True
+
+
 class ProjectVault:
     def __init__(self, project_path):
         self.project_path = project_path
@@ -537,11 +550,12 @@ class ProjectVault:
                         "temp_path": temp_file_path
                     })
                 else:
-                    # Compare size/mtime. Simple size/content check for now.
+                    # Skip content reads when sizes already prove a difference.
                     stat_proj = os.stat(project_file_path)
                     stat_temp = os.stat(temp_file_path)
-                    if stat_proj.st_size != stat_temp.st_size: 
-                         diffs.append({
+                    if (stat_proj.st_size != stat_temp.st_size
+                            or not _files_equal(project_file_path, temp_file_path)):
+                        diffs.append({
                             "file": rel_path,
                             "status": "MODIFIED",
                             "size_diff": stat_temp.st_size - stat_proj.st_size,
