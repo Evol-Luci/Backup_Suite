@@ -1,11 +1,15 @@
 """Per-project SQLite checkpoint catalog and verified object references."""
 
+import ctypes
+import errno
 import fnmatch
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import stat
+import tempfile
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -251,18 +255,87 @@ class ProjectRepository:
                 errors.append(f"{entry.path}: file size mismatch")
         return VerificationReport(checkpoint_id, not errors, checked, tuple(errors))
 
+    @staticmethod
+    def _validate_restore_entries(entries: list[FileEntry]) -> None:
+        paths = set()
+        for entry in entries:
+            parts = entry.path.split("/")
+            if (not entry.path or entry.path.startswith("/") or "\\" in entry.path or
+                    any(part in ("", ".", "..") for part in parts)):
+                raise RepositoryError(f"unsafe checkpoint path: {entry.path}")
+            if entry.kind not in ("file", "symlink"):
+                raise RepositoryError(f"unsupported checkpoint entry kind: {entry.kind}")
+            paths.add(entry.path)
+        for path in paths:
+            parts = path.split("/")
+            if any("/".join(parts[:index]) in paths for index in range(1, len(parts))):
+                raise RepositoryError(f"checkpoint path has a file or symlink parent: {path}")
+
+    @staticmethod
+    def _publish_restore(staging: Path, destination: Path) -> None:
+        """Linux atomic rename that fails if another writer created destination."""
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = libc.renameat2
+        renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                              ctypes.c_char_p, ctypes.c_uint)
+        renameat2.restype = ctypes.c_int
+        if renameat2(-100, os.fsencode(staging), -100, os.fsencode(destination), 1) != 0:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, os.strerror(error_number), destination)
+
+    def restore_checkpoint(self, checkpoint_id: str, destination: Path) -> None:
+        """Verify, stage, and publish a checkpoint at a new sibling path."""
+        destination = Path(destination).absolute()
+        if os.path.lexists(destination):
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), destination)
+        entries = self.get_file_entries(checkpoint_id)
+        self._validate_restore_entries(entries)
+        verification = self.verify_checkpoint(checkpoint_id)
+        if not verification.ok:
+            raise CorruptObject("checkpoint cannot be restored: " + "; ".join(verification.errors))
+
+        staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.",
+                                        dir=destination.parent))
+        try:
+            for entry in entries:
+                target = staging.joinpath(*entry.path.split("/"))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if entry.kind == "symlink":
+                    data = b"".join(self.object_store.read_object(digest)
+                                    for digest in entry.chunk_digests)
+                    os.symlink(data.decode("utf-8", "surrogateescape"), target)
+                else:
+                    with target.open("xb") as stream:
+                        for digest in entry.chunk_digests:
+                            stream.write(self.object_store.read_object(digest))
+                    target.chmod(entry.mode & 0o777)
+            self._publish_restore(staging, destination)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+
     def storage_usage(self) -> StorageUsage:
-        """Report referenced logical bytes and unreferenced published object bytes."""
+        """Report current snapshot size, stored object bytes, and valid orphan bytes."""
         with self._connect() as connection:
-            logical = connection.execute("SELECT COALESCE(SUM(logical_bytes), 0) FROM checkpoints").fetchone()[0]
+            row = connection.execute(
+                "SELECT COALESCE(SUM(file_entries.size), 0) "
+                "FROM file_entries WHERE checkpoint_id = ("
+                "SELECT id FROM checkpoints ORDER BY created_at DESC, rowid DESC LIMIT 1)"
+            ).fetchone()
+            logical = row[0] if row else 0
             referenced = {row[0] for row in connection.execute("SELECT DISTINCT digest FROM chunk_refs")}
         physical = 0
         reclaimable = 0
         for shard in (self.store_dir / "objects").glob("*/*"):
-            if not shard.is_file() or len(shard.name) != 64:
+            if (not shard.is_file() or shard.is_symlink() or len(shard.name) != 64 or
+                    shard.parent.name != shard.name[:2]):
+                continue
+            try:
+                self.object_store._object_path(shard.name)
+            except ValueError:
                 continue
             size = shard.stat().st_size
             physical += size
-            if shard.name not in referenced:
+            if shard.name not in referenced and self.object_store.verify_object(shard.name):
                 reclaimable += size
         return StorageUsage(logical, physical, reclaimable)

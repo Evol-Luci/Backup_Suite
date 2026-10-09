@@ -9,7 +9,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from solace_engine.errors import RepositoryError
+from solace_engine.errors import CorruptObject, RepositoryError
 from solace_engine.repository import ProjectRepository
 
 
@@ -209,6 +209,123 @@ class RepositoryTests(unittest.TestCase):
         checkpoint = self.repo.create_checkpoint("created")
         self.assertEqual(checkpoint.file_count, 0)
         self.assertTrue(any("pipe" in warning for warning in checkpoint.warnings))
+
+    def test_restore_content_mode_and_symlink_to_new_destination(self):
+        (self.project / "sub").mkdir()
+        (self.project / "sub" / "text").write_bytes(b"saved content")
+        executable = self.project / "run.sh"
+        executable.write_bytes(b"#!/bin/sh\n")
+        executable.chmod(0o755)
+        (self.project / "link").symlink_to("sub/text")
+        checkpoint = self.repo.create_checkpoint("saved")
+        destination = self.base / "restored"
+
+        self.repo.restore_checkpoint(checkpoint.id, destination)
+
+        self.assertEqual((destination / "sub" / "text").read_bytes(), b"saved content")
+        self.assertEqual((destination / "run.sh").read_bytes(), b"#!/bin/sh\n")
+        self.assertTrue((destination / "run.sh").stat().st_mode & 0o111)
+        self.assertTrue((destination / "link").is_symlink())
+        self.assertEqual(os.readlink(destination / "link"), "sub/text")
+
+    def test_restore_refuses_existing_destination_including_broken_symlink(self):
+        (self.project / "a").write_bytes(b"saved")
+        checkpoint = self.repo.create_checkpoint("saved")
+        destination = self.base / "restored"
+        destination.mkdir()
+        (destination / "keep").write_bytes(b"untouched")
+        with self.assertRaises(FileExistsError):
+            self.repo.restore_checkpoint(checkpoint.id, destination)
+        self.assertEqual((destination / "keep").read_bytes(), b"untouched")
+        destination = self.base / "broken"
+        destination.symlink_to("missing")
+        with self.assertRaises(FileExistsError):
+            self.repo.restore_checkpoint(checkpoint.id, destination)
+        self.assertTrue(destination.is_symlink())
+
+    def test_corrupt_restore_does_not_publish_or_leave_staging(self):
+        (self.project / "a").write_bytes(b"saved")
+        checkpoint = self.repo.create_checkpoint("saved")
+        digest = self.repo.get_file_entries(checkpoint.id)[0].chunk_digests[0]
+        self.repo.object_store._object_path(digest).write_bytes(b"corrupt")
+        destination = self.base / "restored"
+        with self.assertRaises(CorruptObject):
+            self.repo.restore_checkpoint(checkpoint.id, destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(self.base.glob(".restored.*")), [])
+
+    def test_restore_write_failure_cleans_only_its_staging_tree(self):
+        (self.project / "a").write_bytes(b"saved")
+        checkpoint = self.repo.create_checkpoint("saved")
+        destination = self.base / "restored"
+        original_read = self.repo.object_store.read_object
+        calls = 0
+
+        def fail_after_preflight(digest):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise CorruptObject("changed after preflight")
+            return original_read(digest)
+
+        with patch.object(self.repo.object_store, "read_object", side_effect=fail_after_preflight):
+            with self.assertRaises(CorruptObject):
+                self.repo.restore_checkpoint(checkpoint.id, destination)
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(self.base.glob(".restored.*")), [])
+
+    def test_restore_publication_refuses_destination_created_during_staging(self):
+        (self.project / "a").write_bytes(b"saved")
+        checkpoint = self.repo.create_checkpoint("saved")
+        destination = self.base / "restored"
+        original_publish = self.repo._publish_restore
+
+        def create_destination_then_publish(staging, target):
+            destination.mkdir()
+            (destination / "keep").write_bytes(b"untouched")
+            original_publish(staging, target)
+
+        with patch.object(self.repo, "_publish_restore", side_effect=create_destination_then_publish):
+            with self.assertRaises(FileExistsError):
+                self.repo.restore_checkpoint(checkpoint.id, destination)
+        self.assertEqual((destination / "keep").read_bytes(), b"untouched")
+        self.assertEqual(list(self.base.glob(".restored.*")), [])
+
+    def test_restore_rejects_unsafe_catalog_paths_before_materialization(self):
+        (self.project / "a").write_bytes(b"saved")
+        checkpoint = self.repo.create_checkpoint("saved")
+        with closing(sqlite3.connect(self.repo.database_path)) as connection:
+            with connection:
+                connection.execute("UPDATE file_entries SET path = ? WHERE checkpoint_id = ?",
+                                   ("../escaped", checkpoint.id))
+                connection.execute("UPDATE chunk_refs SET path = ? WHERE checkpoint_id = ?",
+                                   ("../escaped", checkpoint.id))
+        destination = self.base / "restored"
+        with self.assertRaises(RepositoryError):
+            self.repo.restore_checkpoint(checkpoint.id, destination)
+        self.assertFalse(destination.exists())
+        self.assertFalse((self.base / "escaped").exists())
+
+    def test_storage_usage_uses_newest_snapshot_and_only_valid_unreferenced_objects(self):
+        (self.project / "a").write_bytes(b"first")
+        first = self.repo.create_checkpoint("first")
+        (self.project / "a").write_bytes(b"second version")
+        second = self.repo.create_checkpoint("second")
+        self.repo.object_store.put_bytes(b"orphan")
+        corrupt = self.repo.object_store.put_bytes(b"bad")
+        self.repo.object_store._object_path(corrupt).write_bytes(b"corrupt-data")
+        with closing(sqlite3.connect(self.repo.database_path)) as connection:
+            with connection:
+                connection.execute("UPDATE checkpoints SET logical_bytes = 999 WHERE id = ?",
+                                   (second.id,))
+
+        usage = self.repo.storage_usage()
+
+        self.assertEqual(usage.logical_bytes, second.logical_bytes)
+        self.assertEqual(usage.physical_bytes,
+                         len(b"first") + len(b"second version") + len(b"orphan") + len(b"corrupt-data"))
+        self.assertEqual(usage.reclaimable_bytes, len(b"orphan"))
+        self.assertTrue(self.repo.verify_checkpoint(first.id).ok)
 
 
 if __name__ == "__main__":
