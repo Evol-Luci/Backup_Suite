@@ -1,9 +1,11 @@
 """Repository capture, isolation, and integrity behavior."""
 
+import os
 import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -71,11 +73,58 @@ class RepositoryTests(unittest.TestCase):
 
     def test_database_failure_leaves_only_reclaimable_objects(self):
         (self.project / "a").write_bytes(b"orphan")
-        with patch.object(self.repo, "_insert_checkpoint", side_effect=sqlite3.OperationalError("injected")):
+        def insert_then_fail(connection, checkpoint, entries):
+            connection.execute(
+                "INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (checkpoint.id, checkpoint.message, checkpoint.created_at,
+                 checkpoint.parent_id, checkpoint.file_count, checkpoint.logical_bytes, "[]"),
+            )
+            raise sqlite3.OperationalError("injected after first insert")
+
+        with patch.object(self.repo, "_insert_checkpoint", side_effect=insert_then_fail):
             with self.assertRaises(sqlite3.OperationalError):
                 self.repo.create_checkpoint("failed")
         self.assertEqual(self.repo.list_checkpoints(), [])
+        with closing(sqlite3.connect(self.repo.database_path)) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM file_entries").fetchone()[0], 0)
         self.assertGreater(self.repo.storage_usage().reclaimable_bytes, 0)
+
+    def test_file_swap_during_capture_does_not_read_outside_project(self):
+        inside = self.project / "a"
+        inside.write_bytes(b"inside")
+        outside = self.base / "outside"
+        outside.write_bytes(b"outside secret")
+        original_put_file = self.repo.object_store.put_file
+
+        def swap_before_read(path):
+            inside.unlink()
+            inside.symlink_to(outside)
+            return original_put_file(path)
+
+        with patch.object(self.repo.object_store, "put_file", side_effect=swap_before_read):
+            checkpoint = self.repo.create_checkpoint("swapped")
+        entry = self.repo.get_file_entries(checkpoint.id)[0]
+        self.assertEqual(self.repo.object_store.read_object(entry.chunk_digests[0]), b"inside")
+
+    def test_directory_swap_before_open_is_rejected(self):
+        child = self.project / "sub"
+        child.mkdir()
+        (child / "a").write_bytes(b"inside")
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "secret").write_bytes(b"outside")
+        original_open = os.open
+
+        def swap_directory(path, flags, *args, **kwargs):
+            if path == "sub":
+                child.rename(self.base / "old-sub")
+                child.symlink_to(outside, target_is_directory=True)
+            return original_open(path, flags, *args, **kwargs)
+
+        with patch("solace_engine.repository.os.open", side_effect=swap_directory):
+            with self.assertRaises(OSError):
+                self.repo.create_checkpoint("swapped directory")
+        self.assertEqual(self.repo.list_checkpoints(), [])
 
     def test_concurrent_instances_publish_complete_checkpoints(self):
         (self.project / "a").write_bytes(b"concurrent")
@@ -113,15 +162,31 @@ class RepositoryTests(unittest.TestCase):
     def test_manifest_digest_mismatch_is_reported(self):
         (self.project / "a").write_bytes(b"content")
         checkpoint = self.repo.create_checkpoint("created")
-        with sqlite3.connect(self.repo.database_path) as connection:
-            connection.execute("UPDATE file_entries SET file_digest = ? WHERE checkpoint_id = ?",
-                               ("0" * 64, checkpoint.id))
+        with closing(sqlite3.connect(self.repo.database_path)) as connection:
+            with connection:
+                connection.execute("UPDATE file_entries SET file_digest = ? WHERE checkpoint_id = ?",
+                                   ("0" * 64, checkpoint.id))
+        report = self.repo.verify_checkpoint(checkpoint.id)
+        self.assertFalse(report.ok)
+        self.assertTrue(any("whole-file digest mismatch" in error for error in report.errors))
+
+    def test_changed_multichunk_reference_fails_reconstruction(self):
+        (self.project / "large").write_bytes(bytes(range(256)) * 4096 + bytes(reversed(range(256))) * 4096)
+        checkpoint = self.repo.create_checkpoint("large")
+        chunks = self.repo.get_file_entries(checkpoint.id)[0].chunk_digests
+        self.assertGreater(len(chunks), 1)
+        self.assertNotEqual(chunks[0], chunks[1])
+        with closing(sqlite3.connect(self.repo.database_path)) as connection:
+            with connection:
+                connection.execute(
+                    "UPDATE chunk_refs SET digest = ? WHERE checkpoint_id = ? AND ordinal = 0",
+                    (chunks[1], checkpoint.id),
+                )
         report = self.repo.verify_checkpoint(checkpoint.id)
         self.assertFalse(report.ok)
         self.assertTrue(any("whole-file digest mismatch" in error for error in report.errors))
 
     def test_special_file_yields_warning(self):
-        import os
         os.mkfifo(self.project / "pipe")
         checkpoint = self.repo.create_checkpoint("created")
         self.assertEqual(checkpoint.file_count, 0)

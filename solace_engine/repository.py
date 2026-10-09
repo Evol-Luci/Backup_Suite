@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from .errors import CheckpointNotFound, CorruptObject, InvalidProjectPath
+from .errors import CheckpointNotFound, CorruptObject, InvalidProjectPath, RepositoryError
 from .models import Checkpoint, FileEntry, StorageUsage, VerificationReport
 from .object_store import ObjectStore
 
@@ -28,6 +28,7 @@ class ProjectRepository:
         self.store_dir = Path(store_dir).absolute()
         if not self.project_root.is_dir() or self.project_root.is_symlink():
             raise InvalidProjectPath(f"project directory is unavailable: {project_root}")
+        self._project_identity = self.project_root.stat()
         if self.store_dir == self.project_root:
             raise InvalidProjectPath("store directory cannot be the project root")
         self.store_dir.mkdir(parents=True, exist_ok=True)
@@ -94,28 +95,61 @@ class ProjectRepository:
         entries: list[FileEntry] = []
         warnings: list[str] = []
 
-        def walk(directory: Path):
-            for item in sorted(os.scandir(directory), key=lambda item: item.name):
-                path = Path(item.path)
+        def same_identity(first: os.stat_result, second: os.stat_result) -> bool:
+            return (first.st_dev, first.st_ino, stat.S_IFMT(first.st_mode)) == (
+                second.st_dev, second.st_ino, stat.S_IFMT(second.st_mode))
+
+        def require_identity(first: os.stat_result, second: os.stat_result, relative: str) -> None:
+            if not same_identity(first, second):
+                raise RepositoryError(f"entry changed during checkpoint capture: {relative}")
+
+        def walk(directory_fd: int, directory: Path):
+            with os.scandir(directory_fd) as stream:
+                names = sorted(item.name for item in stream)
+            for name in names:
+                path = directory / name
                 relative = path.relative_to(self.project_root).as_posix()
                 if self._excluded(path, relative, exclusions):
                     continue
-                metadata = item.stat(follow_symlinks=False)
+                metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                 if stat.S_ISLNK(metadata.st_mode):
-                    target = os.readlink(path).encode("utf-8", "surrogateescape")
+                    target = os.readlink(name, dir_fd=directory_fd).encode("utf-8", "surrogateescape")
+                    require_identity(metadata, os.stat(name, dir_fd=directory_fd,
+                                                       follow_symlinks=False), relative)
                     digest = self.object_store.put_bytes(target)
                     entries.append(FileEntry(relative, "symlink", metadata.st_mode & 0o777,
                                              len(target), digest, (digest,)))
                 elif stat.S_ISDIR(metadata.st_mode):
-                    walk(path)
+                    child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                       dir_fd=directory_fd)
+                    try:
+                        require_identity(metadata, os.fstat(child_fd), relative)
+                        walk(child_fd, path)
+                    finally:
+                        os.close(child_fd)
                 elif stat.S_ISREG(metadata.st_mode):
-                    digest, size, chunks = self.object_store.put_file(path)
+                    file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW,
+                                      dir_fd=directory_fd)
+                    try:
+                        opened = os.fstat(file_fd)
+                        require_identity(metadata, opened, relative)
+                        # The proc fd path remains attached to this inode if another
+                        # agent replaces the directory entry during chunking.
+                        digest, size, chunks = self.object_store.put_file(
+                            Path(f"/proc/self/fd/{file_fd}"))
+                    finally:
+                        os.close(file_fd)
                     entries.append(FileEntry(relative, "file", metadata.st_mode & 0o777,
                                              size, digest, chunks))
                 else:
                     warnings.append(f"Skipped unsupported special file: {relative}")
 
-        walk(self.project_root)
+        root_fd = os.open(self.project_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            require_identity(self._project_identity, os.fstat(root_fd), ".")
+            walk(root_fd, self.project_root)
+        finally:
+            os.close(root_fd)
         return entries, warnings
 
     def _insert_checkpoint(self, connection: sqlite3.Connection, checkpoint: Checkpoint,
