@@ -9,6 +9,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+from solace_engine.errors import RepositoryError
 from solace_engine.repository import ProjectRepository
 
 
@@ -124,6 +125,23 @@ class RepositoryTests(unittest.TestCase):
         with patch("solace_engine.repository.os.open", side_effect=swap_directory):
             with self.assertRaises(OSError):
                 self.repo.create_checkpoint("swapped directory")
+        self.assertEqual(self.repo.list_checkpoints(), [])
+
+    def test_file_swapped_to_fifo_cannot_block_open(self):
+        source = self.project / "a"
+        source.write_bytes(b"inside")
+        original_open = os.open
+
+        def swap_to_fifo(path, flags, *args, **kwargs):
+            if path == "a":
+                self.assertTrue(flags & os.O_NONBLOCK, "file open must be nonblocking")
+                source.unlink()
+                os.mkfifo(source)
+            return original_open(path, flags, *args, **kwargs)
+
+        with patch("solace_engine.repository.os.open", side_effect=swap_to_fifo):
+            with self.assertRaises(RepositoryError):
+                self.repo.create_checkpoint("swapped to fifo")
         self.assertEqual(self.repo.list_checkpoints(), [])
 
     def test_concurrent_instances_publish_complete_checkpoints(self):

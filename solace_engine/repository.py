@@ -128,7 +128,9 @@ class ProjectRepository:
                     finally:
                         os.close(child_fd)
                 elif stat.S_ISREG(metadata.st_mode):
-                    file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW,
+                    # O_NONBLOCK prevents a swapped-in FIFO from hanging before
+                    # fstat can reject its changed identity.
+                    file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                                       dir_fd=directory_fd)
                     try:
                         opened = os.fstat(file_fd)
