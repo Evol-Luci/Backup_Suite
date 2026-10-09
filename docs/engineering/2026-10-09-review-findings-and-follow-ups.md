@@ -12,10 +12,10 @@ This register consolidates the final whole-branch review, the scoped fix review,
 | Priority | Area | Finding | Status |
 |---|---|---|---|
 | Critical | Legacy restore | `ProjectVault.restore_snapshot()` removed project contents before checking ZIP integrity. A damaged archive could destroy the current working tree. | **Fixed in this follow-up:** archive integrity and staged extraction precede the project swap; failed publication rolls back. Regression tests cover CRC corruption, unreadable archives, path traversal, reserved vault metadata, and publish rollback. |
-| Important | Legacy compare | `compare_snapshot()` considered file size but not content when sizes matched, so edits such as replacing one same-length value with another were missed. | Open; separate follow-up. |
+| Important | Legacy compare | `compare_snapshot()` considered file size but not content when sizes matched, so edits such as replacing one same-length value with another were missed. | **Fixed in this follow-up:** same-size files are compared byte-for-byte using a fixed-size buffer; a regression test covers equal-length changed content. |
 | Important | Legacy merge | Both GUIs call `apply_merge(..., None)`. Its cleanup path checks `os.path.exists(None)` after applying edits, so the UI can report failure after changing files. | Open; separate follow-up. |
 | Important | Engine error reporting | `ProjectRepository.create_checkpoint()` translates `CorruptObject` into “file changed during checkpoint capture.” The checkpoint still fails safely, but the diagnosis can cause futile retries. | Open; preserve corruption errors in a follow-up. |
-| Important | Branch delivery | Installed-source alignment and architecture documents are uncommitted in the worktree. | Open; commit or otherwise preserve the intended baseline and docs before treating this as a mergeable branch. |
+| Important | Branch delivery | Installed-source alignment and architecture documents were uncommitted in the worktree. | **Fixed:** baseline and architecture documents were committed and merged in PR #1. |
 | Verification gap | GUI | Existing Tk tests could not run because the session had no display at `:0`. | Open; run in a graphical session or establish a supported headless test setup. |
 
 ## Checkpoint-engine findings already fixed
@@ -42,11 +42,9 @@ These items are part of the intended Solace product direction, but are outside t
 
 ## Suggested order
 
-1. Finish and review the staged legacy restore fix in this change.
-2. Fix same-size comparison and merge error reporting in a separate legacy-safety change.
-3. Correct the engine corruption error classification and settle GUI test execution in the target desktop environment.
-4. Commit the installed-source alignment and architecture artifacts as an explicit baseline change.
-5. Continue with the local core service/project registry, then the agent task lifecycle and CLI/GUI review surfaces.
+1. Fix legacy merge cleanup/error reporting; both GUIs pass `None` and the cleanup path can report failure after applying edits.
+2. Correct the engine corruption error classification and settle GUI test execution in the target desktop environment.
+3. Continue with the local core service/project registry, then the agent task lifecycle and CLI/GUI review surfaces.
 
 ## Evidence
 
@@ -57,6 +55,7 @@ These items are part of the intended Solace product direction, but are outside t
 ## Verification for this follow-up
 
 - `python -m unittest tests.test_project_vault_restore -v` — 6 tests passed.
+- `python -m unittest tests.test_project_vault_compare -v` — 1 same-size content comparison regression test passed.
 - `python -m unittest discover -s tests/solace_engine -p 'test_*.py' -v` — 48 tests passed.
-- `python -m unittest discover -s tests -p 'test_*.py' -v` — 6 restore tests passed; 7 branch-visualizer Tk tests errored because the environment could not connect to display `:0`.
-- Scoped review approved the restore fix and issue-register status. `git diff --check` passed for the restore code, tests, and register.
+- `python -m unittest discover -s tests -p 'test_*.py' -v` — GUI test limitation remains: 7 branch-visualizer Tk tests errored because the environment could not connect to display `:0`.
+- `git diff --check` passed for the comparison code, tests, and register.
