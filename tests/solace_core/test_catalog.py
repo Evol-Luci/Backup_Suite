@@ -1,4 +1,5 @@
 import os
+from contextlib import closing
 import shutil
 import sqlite3
 import tempfile
@@ -52,15 +53,14 @@ class CatalogTests(unittest.TestCase):
                             ('UPDATE core_metadata SET schema_version=2', 'SCHEMA_VERSION_UNSUPPORTED'),
                             ('PRAGMA user_version=2', 'SCHEMA_VERSION_UNSUPPORTED')]:
             with self.subTest(query=query):
-                with sqlite3.connect(self.store / 'checkpoints.sqlite3') as db:
+                with closing(sqlite3.connect(self.store / 'checkpoints.sqlite3')) as db, db:
                     db.execute(query)
                 with self.assertRaises(CoreError) as caught:
                     ProjectCatalog(self.registration, self.policy).open_existing()
                 self.assertEqual(caught.exception.code, code)
-                with sqlite3.connect(self.store / 'checkpoints.sqlite3') as db:
+                with closing(sqlite3.connect(self.store / 'checkpoints.sqlite3')) as db, db:
                     db.execute("UPDATE core_metadata SET store_uuid='s', schema_version=1")
                     db.execute('PRAGMA user_version=1')
-        db.close()  # The sqlite context manager commits; it does not close WAL handles.
         (self.store / 'checkpoints.sqlite3').write_bytes(b'corrupt')
         with self.assertRaises(CoreError) as caught:
             ProjectCatalog(self.registration, self.policy).open_existing()
@@ -85,7 +85,7 @@ class CatalogTests(unittest.TestCase):
         with patch.object(repo, '_scan', side_effect=replace):
             with self.assertRaises(InvalidProjectPath):
                 repo.create_checkpoint('bad')
-        with sqlite3.connect(self.store / 'checkpoints.sqlite3') as db:
+        with closing(sqlite3.connect(self.store / 'checkpoints.sqlite3')) as db, db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM checkpoints').fetchone()[0], 0)
 
     def test_missing_objects_symlink_or_remount_refused(self):
