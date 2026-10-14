@@ -20,7 +20,13 @@ def readonly_database(path):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise CoreError('STORE_UNAVAILABLE', 'The database is unavailable.', 'Reconnect storage or explicitly relink.')
-    db = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=30)
+    wal = Path(str(path) + '-wal')
+    shm = Path(str(path) + '-shm')
+    if wal.exists() and not shm.exists():
+        raise CoreError('STORE_UNAVAILABLE', 'Read-only access would need to create WAL metadata.', 'Inspect the database with the core stopped after a clean shutdown; preserve its WAL.')
+    # Offline WAL-format databases otherwise create sidecars even with mode=ro.
+    uri = path.resolve().as_uri() + '?mode=ro' + ('' if wal.exists() else '&immutable=1')
+    db = sqlite3.connect(uri, uri=True, timeout=30)
     try:
         db.execute('PRAGMA query_only=ON')
         yield db

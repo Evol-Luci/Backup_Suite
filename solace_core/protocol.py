@@ -81,7 +81,7 @@ def validate_request(value):
         elif key == 'exclusions':
             if not isinstance(item, list) or any(not isinstance(x, str) or '\0' in x for x in item):
                 raise invalid('Exclusions must be strings.')
-        elif not isinstance(item, str) or '\0' in item or (key != 'message' and not item):
+        elif not isinstance(item, str) or '\0' in item or (key not in ('message','confirmed_root') and not item):
             raise invalid('Parameter must be a nonempty string.')
     return value
 
