@@ -133,6 +133,16 @@ class ProjectCatalog:
         db.execute('INSERT INTO events (project_id,operation_id,actor,created_at,kind,state,details_json) VALUES (?,?,?,?,?,?,?)',
                    (self.registration['id'], operation['id'], operation['actor'], self._now(), kind, state, json.dumps(details)))
 
+    def find_operation(self, request):
+        signature = fingerprint(request['method'], request['params'], request['actor'])
+        with self.connect() as db:
+            row = db.execute('SELECT id,fingerprint FROM operations WHERE request_id=?', (request['id'],)).fetchone()
+        if row:
+            if row['fingerprint'] != signature:
+                raise CoreError('REQUEST_ID_REUSED', 'This request ID has different arguments.', 'Use the original arguments or a new request ID.')
+            return {'operation_id': row['id']}
+        return None
+
     def accept_operation(self, request):
         signature = fingerprint(request['method'], request['params'], request['actor'])
         with self.connect(write=True) as db:
