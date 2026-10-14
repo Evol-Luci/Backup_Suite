@@ -3,6 +3,11 @@ from contextlib import contextmanager
 from pathlib import Path
 import os
 import sqlite3
+import json
+import threading
+import uuid
+from datetime import datetime, timezone
+from .protocol import fingerprint
 
 from solace_engine.repository import ProjectRepository
 from solace_engine.object_store import ObjectStore
@@ -29,6 +34,7 @@ class ProjectCatalog:
         self.policy = policy or StoragePolicy()
         self.store = Path(registration['store'])
         self.database = self.store / 'checkpoints.sqlite3'
+        self.condition = threading.Condition()
 
     @classmethod
     def create(cls, registration, policy=None):
@@ -42,6 +48,16 @@ class ProjectCatalog:
         repo = ProjectRepository(root, catalog.store)
         with repo._connect() as db:
             db.execute('CREATE TABLE core_metadata (singleton INTEGER PRIMARY KEY CHECK(singleton=1), schema_version INTEGER NOT NULL, project_id TEXT NOT NULL, store_uuid TEXT NOT NULL)')
+            db.executescript('''
+                CREATE TABLE operations (id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE,
+                    fingerprint TEXT NOT NULL, kind TEXT NOT NULL, actor TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('queued','running','succeeded','failed','interrupted')),
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, result_json TEXT, error_json TEXT,
+                    params_json TEXT NOT NULL);
+                CREATE TABLE events (seq INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL,
+                    operation_id TEXT, actor TEXT NOT NULL, created_at TEXT NOT NULL, kind TEXT NOT NULL,
+                    state TEXT NOT NULL, details_json TEXT NOT NULL);
+            ''')
             db.execute('INSERT INTO core_metadata VALUES (1,1,?,?)', (registration['id'], registration['store_uuid']))
         catalog.database.chmod(0o600)
         ObjectStore._sync_directories((catalog.store / 'objects', catalog.store, catalog.store.parent))
@@ -81,3 +97,124 @@ class ProjectCatalog:
             return ProjectRepository.open_existing(Path(self.registration['root']), self.store)
         except Exception as error:
             raise classify(error) from error
+
+    @contextmanager
+    def connect(self, *, write=False):
+        self.validate(require_root=False)
+        db = sqlite3.connect(self.database.as_uri() + ('?mode=rw' if write else '?mode=ro'), uri=True, timeout=30)
+        db.row_factory = sqlite3.Row
+        try:
+            db.execute('PRAGMA foreign_keys=ON')
+            if write:
+                db.execute('PRAGMA synchronous=FULL')
+                db.execute('BEGIN IMMEDIATE')
+            else:
+                db.execute('PRAGMA query_only=ON')
+            try:
+                yield db
+                if write:
+                    db.commit()
+            except BaseException:
+                if write:
+                    db.rollback()
+                raise
+        finally:
+            db.close()
+
+    def notify(self):
+        with self.condition:
+            self.condition.notify_all()
+
+    @staticmethod
+    def _now():
+        return datetime.now(timezone.utc).isoformat()
+
+    def _event(self, db, operation, kind, state, details):
+        db.execute('INSERT INTO events (project_id,operation_id,actor,created_at,kind,state,details_json) VALUES (?,?,?,?,?,?,?)',
+                   (self.registration['id'], operation['id'], operation['actor'], self._now(), kind, state, json.dumps(details)))
+
+    def accept_operation(self, request):
+        signature = fingerprint(request['method'], request['params'], request['actor'])
+        with self.connect(write=True) as db:
+            row = db.execute('SELECT id,fingerprint FROM operations WHERE request_id=?', (request['id'],)).fetchone()
+            if row:
+                if row['fingerprint'] != signature:
+                    raise CoreError('REQUEST_ID_REUSED', 'This request ID has different arguments.', 'Use the original arguments or a new request ID.')
+                return {'operation_id': row['id']}
+            operation = dict(id=uuid.uuid4().hex, actor=request['actor'])
+            now = self._now()
+            # Messages stay in checkpoint records, never in operation/event details.
+            params = {k:v for k,v in request['params'].items() if k in ('checkpoint','destination','exclusions')}
+            db.execute('INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                       (operation['id'],request['id'],signature,request['method'],request['actor'],'queued',now,now,None,None,json.dumps(params)))
+            self._event(db, operation, 'operation.queued', 'queued', {})
+        self.notify()
+        return {'operation_id': operation['id']}
+
+    @staticmethod
+    def _operation(row):
+        value = dict(row)
+        for source, target in [('result_json','result'),('error_json','error'),('params_json','params')]:
+            encoded = value.pop(source)
+            value[target] = json.loads(encoded) if encoded is not None else None
+        value.pop('fingerprint', None)
+        return value
+
+    def get_operation(self, operation_id):
+        with self.connect() as db:
+            row = db.execute('SELECT * FROM operations WHERE id=?', (operation_id,)).fetchone()
+        if row is None:
+            raise CoreError('INVALID_REQUEST', 'The operation does not exist.', 'Use an operation ID returned by this project.')
+        return self._operation(row)
+
+    def _transition(self, db, operation_id, state, result=None, error=None, *, kind=None):
+        cursor = db.cursor()
+        cursor.row_factory = sqlite3.Row  # Engine hook connections use tuple rows.
+        row = cursor.execute('SELECT * FROM operations WHERE id=?', (operation_id,)).fetchone()
+        if row is None:
+            raise CoreError('INVALID_REQUEST', 'Unknown operation.', 'Use an existing operation ID.')
+        allowed = {'queued': {'running','interrupted','failed'}, 'running': {'succeeded','failed','interrupted'}}
+        if state not in allowed.get(row['state'], set()):
+            raise CoreError('INVALID_REQUEST', 'Invalid operation state transition.', 'Inspect the existing operation result.')
+        db.execute('UPDATE operations SET state=?,updated_at=?,result_json=?,error_json=? WHERE id=?',
+                   (state,self._now(),json.dumps(result) if result is not None else None,
+                    json.dumps(error) if error is not None else None,operation_id))
+        details = {k:v for k,v in (result or {}).items() if k in ('checkpoint_id','file_count','logical_bytes')}
+        if error:
+            details['error_code'] = error['code']
+        self._event(db, dict(row), kind or 'operation.' + state, state, details)
+
+    def transition(self, operation_id, state, result=None, error=None):
+        with self.connect(write=True) as db:
+            self._transition(db, operation_id, state, result, error)
+        self.notify()
+        return self.get_operation(operation_id)
+
+    def complete_checkpoint(self, db, operation_id, checkpoint):
+        self.validate()
+        self._transition(db, operation_id, 'succeeded',
+                         dict(checkpoint_id=checkpoint.id, file_count=checkpoint.file_count, logical_bytes=checkpoint.logical_bytes),
+                         kind='checkpoint.created')
+
+    def events_after(self, cursor, limit=256):
+        with self.connect() as db:
+            maximum = db.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]
+            if type(cursor) is not int or cursor < 0 or cursor > maximum:
+                raise CoreError('CURSOR_INVALID', 'The event cursor is outside retained history.', 'Start at cursor 0 or your last delivered sequence.')
+            rows = db.execute('SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT ?', (cursor,limit)).fetchall()
+        events = []
+        for row in rows:
+            value = dict(row)
+            value['details'] = json.loads(value.pop('details_json'))
+            events.append(value)
+        return events
+
+    def recover_interrupted(self):
+        with self.connect(write=True) as db:
+            ids = [r[0] for r in db.execute("SELECT id FROM operations WHERE state IN ('queued','running')")]
+            for operation in ids:
+                error = CoreError('OPERATION_INTERRUPTED', 'The core stopped before a committed result.', 'Inspect the operation and any restore destination before starting new work.').as_dict()
+                self._transition(db, operation, 'interrupted', error=error)
+        if ids:
+            self.notify()
+        return ids

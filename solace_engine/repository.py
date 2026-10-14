@@ -239,7 +239,8 @@ class ProjectRepository:
                  for index, digest in enumerate(entry.chunk_digests)),
             )
 
-    def create_checkpoint(self, message: str, exclusions: Sequence[str] = ()) -> Checkpoint:
+    def create_checkpoint(self, message: str, exclusions: Sequence[str] = (), *,
+                          publication_hook=None) -> Checkpoint:
         entries, warnings = self._scan(exclusions)
         for entry in entries:
             for digest in entry.chunk_digests:
@@ -259,6 +260,8 @@ class ProjectRepository:
                 warnings=tuple(warnings),
             )
             self._insert_checkpoint(connection, checkpoint, entries)
+            if publication_hook is not None:
+                publication_hook(connection, checkpoint)
         return checkpoint
 
     @staticmethod
