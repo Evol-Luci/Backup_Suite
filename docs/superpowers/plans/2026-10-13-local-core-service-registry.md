@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-09-local-core-service-registry-design.md`.
 
-**Execution status:** Ready for written-plan review. Product implementation has not started.
+**Execution status:** Approved 2026-10-13; all eight implementation tasks completed and tested. Real user-manager installation/activation remains pending separate authorization.
 
 ## Global Constraints
 
@@ -226,7 +226,7 @@ Subscriptions send an acknowledgement, then durable events strictly after the su
 
 **Interfaces:** Produce `CorePaths`, `CoreError(code, message, next_step, retryable=False)`, `StoragePolicy`, `StorageLocation`, `encode_frame(dict) -> bytes`, and `decode_frame(bytes) -> dict`. Inject mountinfo and sync roots into `StoragePolicy` for deterministic tests.
 
-- [ ] Write failing tests for runtime ownership/mode, relative XDG paths, mount escapes/longest prefix, unsupported/read-only/sync storage, and frame bounds. Include this concrete protocol regression:
+- [x] Write failing tests for runtime ownership/mode, relative XDG paths, mount escapes/longest prefix, unsupported/read-only/sync storage, and frame bounds. Include this concrete protocol regression:
 
 ```python
 def test_nonfinite_json_is_rejected(self):
@@ -237,10 +237,10 @@ def test_nonfinite_json_is_rejected(self):
     self.assertEqual(caught.exception.code, "INVALID_REQUEST")
 ```
 
-- [ ] Run `python -m unittest discover -s tests/solace_core -p 'test_*.py' -v`; confirm missing-module failure.
-- [ ] Implement the interfaces and exact path/framing/storage decisions above. Base frame encoding on `json.dumps(..., allow_nan=False, ensure_ascii=True)`. Match mount ancestry with `Path.is_relative_to`, not string prefixes.
-- [ ] Run those tests again; add the regression that `/data/project-two` does not match `/data/project`, and that `True` is rejected as an event cursor.
-- [ ] Review `git diff --check`; stage only this task's files and commit `feat: define local core protocol and storage policy` when commit access is available.
+- [x] Run `python -m unittest discover -s tests/solace_core -p 'test_*.py' -v`; confirm missing-module failure.
+- [x] Implement the interfaces and exact path/framing/storage decisions above. Base frame encoding on `json.dumps(..., allow_nan=False, ensure_ascii=True)`. Match mount ancestry with `Path.is_relative_to`, not string prefixes.
+- [x] Run those tests again; add the regression that `/data/project-two` does not match `/data/project`, and that `True` is rejected as an event cursor.
+- [x] Review `git diff --check`; stage only this task's files and commit `feat: define local core protocol and storage policy` when commit access is available.
 
 ## Task 2: Explicit store creation and no-create engine access
 
@@ -248,7 +248,7 @@ def test_nonfinite_json_is_rejected(self):
 
 **Interfaces:** Produce `ProjectCatalog` creation/identity/open routines, `ProjectRepository.open_existing`, and `ObjectStore.open_existing`. Do not route ordinary operations through the initializing engine constructors.
 
-- [ ] Write failing tests for opening missing catalogs, missing object directories, store UUID mismatch, newer core/engine schemas, corrupt SQLite, and store path replaced by a symlink. Test the no-create guarantee:
+- [x] Write failing tests for opening missing catalogs, missing object directories, store UUID mismatch, newer core/engine schemas, corrupt SQLite, and store path replaced by a symlink. Test the no-create guarantee:
 
 ```python
 def test_existing_open_does_not_recreate_missing_store(self):
@@ -260,10 +260,10 @@ def test_existing_open_does_not_recreate_missing_store(self):
 ```
 
 Use the specific domain exception once defined; do not leave the broad assertion in the final test.
-- [ ] Run `python -m unittest discover -s tests/solace_core -p 'test_catalog.py' -v` and the new engine test; confirm failures.
-- [ ] Split initialization from connection policy; set URI `mode=rw` on existing opens. Add core metadata and an empty objects directory to explicitly created catalogs; use exclusive directory creation and sync new directory entries. Read identity through a read-only connection before mutable engine opening. Implement object shard creation relative to the checked existing objects directory, preserving existing constructor behavior for legacy engine callers.
-- [ ] Run catalog tests and all 49 engine regressions. Check disappearance after validation too: SQLite open must fail without creating a database, object publication must never recreate the absent store root, and pre-publication identity validation must reject a substituted mount or directory. Exercise disappearance between scan and the first object write and immediately before the checkpoint transaction.
-- [ ] Review the diff and commit `feat: open registered checkpoint stores without initialization`.
+- [x] Run `python -m unittest discover -s tests/solace_core -p 'test_catalog.py' -v` and the new engine test; confirm failures.
+- [x] Split initialization from connection policy; set URI `mode=rw` on existing opens. Add core metadata and an empty objects directory to explicitly created catalogs; use exclusive directory creation and sync new directory entries. Read identity through a read-only connection before mutable engine opening. Implement object shard creation relative to the checked existing objects directory, preserving existing constructor behavior for legacy engine callers.
+- [x] Run catalog tests and all 49 engine regressions. Check disappearance after validation too: SQLite open must fail without creating a database, object publication must never recreate the absent store root, and pre-publication identity validation must reject a substituted mount or directory. Exercise disappearance between scan and the first object write and immediately before the checkpoint transaction.
+- [x] Review the diff and commit `feat: open registered checkpoint stores without initialization`.
 
 ## Task 3: Recoverable registration, relink, and unregister
 
@@ -271,7 +271,7 @@ Use the specific domain exception once defined; do not leave the broad assertion
 
 **Interfaces:** Produce the five `Registry` methods above and `Registry.reconcile_intents() -> list[dict]`. Availability is derived on access, not a stale persisted boolean.
 
-- [ ] Write failing lifecycle tests using a temporary data root and an injected local storage policy. Include duplicate roots through aliases, reused request IDs, nonempty store refusal, and this source-scan guard:
+- [x] Write failing lifecycle tests using a temporary data root and an injected local storage policy. Include duplicate roots through aliases, reused request IDs, nonempty store refusal, and this source-scan guard:
 
 ```python
 def test_add_does_not_scan_or_checkpoint(self):
@@ -284,10 +284,10 @@ def test_add_does_not_scan_or_checkpoint(self):
     self.assertEqual(list(self.project.iterdir()), [])
 ```
 
-- [ ] Run `python -m unittest discover -s tests/solace_core -p 'test_registry.py' -v`; confirm failure.
-- [ ] Implement registry SQL, canonical uniqueness, cached mutation receipts, and the registration intent/create/publish sequence. Unregister deletes only the registration row and stores its receipt; never remove files. Relink verifies the original project/store IDs and the exact confirmed root, then updates the registry atomically.
-- [ ] Inject interruption after intent commit, after store creation, and after final commit. Reconciliation must expose interruption or finish an identity-matching intent without recapturing files. Verify missing roots/stores and remounted paths never create replacements; an unregister retry returns its original result. Test relink to another project's store and unconfirmed roots are refused.
-- [ ] Run all core tests, review the diff, and commit `feat: add recoverable local project registration`.
+- [x] Run `python -m unittest discover -s tests/solace_core -p 'test_registry.py' -v`; confirm failure.
+- [x] Implement registry SQL, canonical uniqueness, cached mutation receipts, and the registration intent/create/publish sequence. Unregister deletes only the registration row and stores its receipt; never remove files. Relink verifies the original project/store IDs and the exact confirmed root, then updates the registry atomically.
+- [x] Inject interruption after intent commit, after store creation, and after final commit. Reconciliation must expose interruption or finish an identity-matching intent without recapturing files. Verify missing roots/stores and remounted paths never create replacements; an unregister retry returns its original result. Test relink to another project's store and unconfirmed roots are refused.
+- [x] Run all core tests, review the diff, and commit `feat: add recoverable local project registration`.
 
 ## Task 4: Atomic operation and event publication
 
@@ -295,7 +295,7 @@ def test_add_does_not_scan_or_checkpoint(self):
 
 **Interfaces:** Produce catalog operation/event methods and the optional `publication_hook(connection, checkpoint)` engine keyword. State transitions append an event in the same transaction.
 
-- [ ] Write failing tests for idempotent acceptance, conflicting request reuse, cursor bounds, ordered sequences, and a hook rollback regression:
+- [x] Write failing tests for idempotent acceptance, conflicting request reuse, cursor bounds, ordered sequences, and a hook rollback regression:
 
 ```python
 def test_failed_publication_hook_rolls_back_checkpoint(self):
@@ -311,10 +311,10 @@ def test_failed_publication_hook_rolls_back_checkpoint(self):
         self.assertEqual(connection.execute("SELECT COUNT(*) FROM hook_probe").fetchone()[0], 0)
 ```
 
-- [ ] Run the new tests and confirm missing keyword/method failures.
-- [ ] Implement operation acceptance, allowed transition checks, event insertion, and post-commit notifications. The checkpoint hook writes operation success and its checkpoint event through the passed connection, never a second connection. Preserve the `CorruptObject` exception classification.
-- [ ] Inject failure before/after checkpoint inserts, during hook insertion, before commit, and immediately after commit/before notification. Reopen the store: checkpoint, success state, and event must appear together or not at all. Persisted events must omit checkpoint messages and arbitrary prompt-like fields. Test concurrent event writers yield unique increasing sequence numbers.
-- [ ] Run core and engine suites, review the diff, and commit `feat: publish checkpoint results and durable events atomically`.
+- [x] Run the new tests and confirm missing keyword/method failures.
+- [x] Implement operation acceptance, allowed transition checks, event insertion, and post-commit notifications. The checkpoint hook writes operation success and its checkpoint event through the passed connection, never a second connection. Preserve the `CorruptObject` exception classification.
+- [x] Inject failure before/after checkpoint inserts, during hook insertion, before commit, and immediately after commit/before notification. Reopen the store: checkpoint, success state, and event must appear together or not at all. Persisted events must omit checkpoint messages and arbitrary prompt-like fields. Test concurrent event writers yield unique increasing sequence numbers.
+- [x] Run core and engine suites, review the diff, and commit `feat: publish checkpoint results and durable events atomically`.
 
 ## Task 5: Project coordination, operations, and restart recovery
 
@@ -322,7 +322,7 @@ def test_failed_publication_hook_rolls_back_checkpoint(self):
 
 **Interfaces:** Produce `CoreService.handle/close`, per-project FIFO coordinators, dispatch for all non-subscription API methods, and startup operation reconciliation. Catalog/registry interfaces come from Tasks 2–4.
 
-- [ ] Write failing dispatch, unknown-method, missing-store, and parallel-project tests. Use threading events to prove a blocked scan in project A does not prevent project B completing; do not use timing-only sleeps:
+- [x] Write failing dispatch, unknown-method, missing-store, and parallel-project tests. Use threading events to prove a blocked scan in project A does not prevent project B completing; do not use timing-only sleeps:
 
 ```python
 entered = threading.Event()
@@ -335,10 +335,10 @@ def blocked_scan(exclusions):
 # wait for B's succeeded event, then release A in a finally block.
 ```
 
-- [ ] Run `python -m unittest discover -s tests/solace_core -p 'test_service.py' -v`; confirm failure.
-- [ ] Implement bounded workers, durable operation acceptance before scheduling, one mutation at a time per project, checkpoint/create/list/verify/restore/usage dispatch, and explicit `PROJECT_BUSY` responses. Validate identity/placement immediately before work; restore accepts only a new nonoverlapping destination. Use fixed safe details for operation records and errors.
-- [ ] Add subprocess crash tests using controlled pipe barriers and process termination before checkpoint commit and after commit/before reply. Reopen and reconcile: nonterminal operations become interrupted once; committed checkpoint results stay succeeded. Test restore interruption preserves its destination, duplicate requests return the same ID, and missing stores do not block another project. Relink/unregister must be refused while work is queued or running.
-- [ ] Run all core and engine tests, review lock ordering for deadlocks, and commit `feat: coordinate core operations and recover interrupted work`.
+- [x] Run `python -m unittest discover -s tests/solace_core -p 'test_service.py' -v`; confirm failure.
+- [x] Implement bounded workers, durable operation acceptance before scheduling, one mutation at a time per project, checkpoint/create/list/verify/restore/usage dispatch, and explicit `PROJECT_BUSY` responses. Validate identity/placement immediately before work; restore accepts only a new nonoverlapping destination. Use fixed safe details for operation records and errors.
+- [x] Add subprocess crash tests using controlled pipe barriers and process termination before checkpoint commit and after commit/before reply. Reopen and reconcile: nonterminal operations become interrupted once; committed checkpoint results stay succeeded. Test restore interruption preserves its destination, duplicate requests return the same ID, and missing stores do not block another project. Relink/unregister must be refused while work is queued or running.
+- [x] Run all core and engine tests, review lock ordering for deadlocks, and commit `feat: coordinate core operations and recover interrupted work`.
 
 ## Task 6: Same-user Unix server and resumable subscriptions
 
@@ -346,11 +346,11 @@ def blocked_scan(exclusions):
 
 **Interfaces:** Produce `CoreClient`, `serve(socket, service)`, and `python -m solace_core --socket PATH` for isolated development. Production takes its socket from systemd; explicit binding is a test/development mode and never bypasses runtime validation.
 
-- [ ] Write failing temporary-Unix-socket tests for round trips, concurrent clients, wrong UID refusal using an injected credential reader, malformed/oversized frames, and disconnect after mutation commit. Test partial reads and multiple frames received in one read.
-- [ ] Run socket/subscription test discovery and confirm failure.
-- [ ] Implement bounded frame reading, Linux `SO_PEERCRED` validation before request reads, one request per client at a time, request timeouts, and structured error envelopes. No AF_INET/AF_INET6 sockets. Development binding refuses existing paths; shutdown unlinks only the socket inode created by this process.
-- [ ] Implement event subscription from durable cursor, batched replay, post-commit wakeups, periodic fallback, and heartbeat frames. Exercise a barrier-controlled commit exactly between replay and waiting; assert all sequences arrive once in order. Disconnect/reconnect with cursor, reject future cursors, terminate on unregister, and prove slow subscribers cannot block checkpoint publication or other clients.
-- [ ] Run all core tests, inspect socket mode, and commit `feat: serve the core over a private Unix socket`.
+- [x] Write failing temporary-Unix-socket tests for round trips, concurrent clients, wrong UID refusal using an injected credential reader, malformed/oversized frames, and disconnect after mutation commit. Test partial reads and multiple frames received in one read.
+- [x] Run socket/subscription test discovery and confirm failure.
+- [x] Implement bounded frame reading, Linux `SO_PEERCRED` validation before request reads, one request per client at a time, request timeouts, and structured error envelopes. No AF_INET/AF_INET6 sockets. Development binding refuses existing paths; shutdown unlinks only the socket inode created by this process.
+- [x] Implement event subscription from durable cursor, batched replay, post-commit wakeups, periodic fallback, and heartbeat frames. Exercise a barrier-controlled commit exactly between replay and waiting; assert all sequences arrive once in order. Disconnect/reconnect with cursor, reject future cursors, terminate on unregister, and prove slow subscribers cannot block checkpoint publication or other clients.
+- [x] Run all core tests, inspect socket mode, and commit `feat: serve the core over a private Unix socket`.
 
 ## Task 7: CLI, legacy routing, and read-only diagnostics
 
@@ -358,7 +358,7 @@ def blocked_scan(exclusions):
 
 **Interfaces:** Produce `cli.main(argv: Sequence[str] | None = None) -> int`, `diagnostics.inspect(registration: dict | None) -> dict`, and the command grammar/exit codes above. `core.status` may activate the core; it reports the connected service PID, version, and project availability. `doctor` reports connectivity independently and can inspect metadata read-only when the core is unavailable.
 
-- [ ] Write subprocess tests with temporary runtime/data roots and a test server. Include JSON flags before/after commands, unavailable core, canonical source-root confirmation, and a read-only diagnostic regression:
+- [x] Write subprocess tests with temporary runtime/data roots and a test server. Include JSON flags before/after commands, unavailable core, canonical source-root confirmation, and a read-only diagnostic regression:
 
 ```python
 before = {p.relative_to(store): p.read_bytes() for p in store.rglob("*") if p.is_file()}
@@ -369,10 +369,10 @@ self.assertFalse(report["ok"])  # fixture contains corrupt database bytes
 ```
 
 Run this byte comparison against an offline fixture; online WAL changes by the active service are not diagnostic writes.
-- [ ] Run CLI/diagnostics tests; confirm failures.
-- [ ] Implement argparse commands, shared JSON errors, method mapping, operation/watch rendering, and exact-root confirmation. Route new command names through this parser before importing legacy GUI/vault code. Print accepted operation IDs and inspection guidance; do not claim the requested capture is finished at acceptance.
-- [ ] Implement doctor with read-only integrity checks, identity/schema/permissions/mount checks, operation summaries, and unavailable-path reporting. Never initialize schemas, run repairs, or create absent paths. Test a newer schema remains byte-identical and legacy dispatch still calls its original handlers without opening a core store.
-- [ ] Run all core tests plus the two existing baseline commands, review the diff, and commit `feat: expose core commands and read-only diagnostics`.
+- [x] Run CLI/diagnostics tests; confirm failures.
+- [x] Implement argparse commands, shared JSON errors, method mapping, operation/watch rendering, and exact-root confirmation. Route new command names through this parser before importing legacy GUI/vault code. Print accepted operation IDs and inspection guidance; do not claim the requested capture is finished at acceptance.
+- [x] Implement doctor with read-only integrity checks, identity/schema/permissions/mount checks, operation summaries, and unavailable-path reporting. Never initialize schemas, run repairs, or create absent paths. Test a newer schema remains byte-identical and legacy dispatch still calls its original handlers without opening a core store.
+- [x] Run all core tests plus the two existing baseline commands, review the diff, and commit `feat: expose core commands and read-only diagnostics`.
 
 ## Task 8: systemd activation, packaging, and acceptance evidence
 
@@ -380,9 +380,9 @@ Run this byte comparison against an offline fixture; online WAL changes by the a
 
 **Interfaces:** User units activate the server with one AF_UNIX listening descriptor at FD 3. The installer stages an immutable versioned runtime and substitutes absolute Python/runtime paths into service and launcher templates. It must not point production at a writable development worktree. Existing application install and data are untouched.
 
-- [ ] Write failing activation tests: pass an inherited listening FD to a subprocess with `LISTEN_PID` set by its entry shim and `LISTEN_FDS=1`; reject missing/multiple/wrong-family descriptors. Assert the process does not bind a TCP socket or unlink the inherited socket on shutdown.
-- [ ] Run activation tests; confirm failures.
-- [ ] Implement FD validation and use the inherited socket directly. Build these unit templates, replacing `@PYTHON@` and `@RUNTIME@` only during installation:
+- [x] Write failing activation tests: pass an inherited listening FD to a subprocess with `LISTEN_PID` set by its entry shim and `LISTEN_FDS=1`; reject missing/multiple/wrong-family descriptors. Assert the process does not bind a TCP socket or unlink the inherited socket on shutdown.
+- [x] Run activation tests; confirm failures.
+- [x] Implement FD validation and use the inherited socket directly. Build these unit templates, replacing `@PYTHON@` and `@RUNTIME@` only during installation:
 
 ```ini
 # solace-core.socket
@@ -415,18 +415,18 @@ RestrictAddressFamilies=AF_UNIX
 ```
 
 No service `WantedBy`: enable the socket alone. Do not enable lingering. Test paths with spaces and systemd escaping; reject newlines/control characters in install paths. Write logs to the journal, without request bodies or prompt/message contents.
-- [ ] Prepare an idempotent installer with a preview mode displaying exact files and commands. Preserve pre-existing unit/launcher files in a timestamped backup before replacement; fail rather than overwrite an unknown runtime directory. Installer output provides rollback commands. Live install/enable requires the user's explicit install authorization and any filesystem escalation; plan implementation does not authorize it.
-- [ ] Run all core/engine/legacy/Tk tests and `git diff --check`. Run `systemd-analyze --user verify` on substituted test units. Perform the inherited-FD subprocess test without modifying user services. Document live systemd testing as pending unless installation is authorized.
+- [x] Prepare an idempotent installer with a preview mode displaying exact files and commands. Preserve pre-existing unit/launcher files in a timestamped backup before replacement; fail rather than overwrite an unknown runtime directory. Installer output provides rollback commands. Live install/enable requires the user's explicit install authorization and any filesystem escalation; plan implementation does not authorize it.
+- [x] Run all core/engine/legacy/Tk tests and `git diff --check`. Run `systemd-analyze --user verify` on substituted test units. Perform the inherited-FD subprocess test without modifying user services. Document live systemd testing as pending unless installation is authorized.
 - [ ] For authorized live acceptance, enable/start only `solace-core.socket`, verify `0600`, trigger `solace core status`, confirm the service becomes active, and use an isolated temporary project to add/create/watch/verify/unregister. Confirm the store survives unregister, restart recovery works, and the process has only Unix listeners. Restore previous units/launcher on rollback; preserve stores. Report installed versus tested-in-subprocess evidence separately.
-- [ ] Update `docs/local-core.md` with commands, errors, storage limits, interruption recovery, event cursor rules, no automatic migration, and install/rollback instructions; commit `feat: package systemd activation for the local core`.
+- [x] Update `docs/local-core.md` with commands, errors, storage limits, interruption recovery, event cursor rules, no automatic migration, and install/rollback instructions; commit `feat: package systemd activation for the local core`.
 
 ## Review and handoff
 
-- [ ] Review each task's diff and its targeted tests before proceeding to the next task.
-- [ ] Recheck all eight spec acceptance criteria against the task evidence; annotate unavailable live installation checks explicitly.
-- [ ] Whole-branch review focuses on store loss/remounts, atomic events, lost-response retries, concurrent subscriptions, and changes to legacy paths. Use a separate reviewer only if the user selects delegation; otherwise record the inline review and its independence limitation.
-- [ ] Run both existing test discovery commands and the new core suite. These suites are separate because the existing engine tests are not collected by the top-level command.
-- [ ] Present the reviewed branch, test totals, limitations, and an exact install preview. Release, merge, and installation remain separate authorized actions.
+- [x] Review each task's diff and its targeted tests before proceeding to the next task.
+- [x] Recheck all eight spec acceptance criteria against the task evidence; annotate unavailable live installation checks explicitly.
+- [x] Whole-branch review focuses on store loss/remounts, atomic events, lost-response retries, concurrent subscriptions, and changes to legacy paths. Use a separate reviewer only if the user selects delegation; otherwise record the inline review and its independence limitation.
+- [x] Run both existing test discovery commands and the new core suite. These suites are separate because the existing engine tests are not collected by the top-level command.
+- [x] Present the reviewed branch, test totals, limitations, and an exact install preview. Release, merge, and installation remain separate authorized actions.
 
 ## Spec coverage check
 
@@ -441,4 +441,4 @@ No service `WantedBy`: enable the socket alone. Do not enable lingering. Test pa
 | Legacy vault and Git compatibility | Tasks 3, 7–8; no registration scan/source writes and unchanged legacy regressions |
 | Packaging/install evidence | Task 8; inherited-FD tests first, live activation after installation authorization |
 
-Written-plan review is the next gate. Native execution is recommended because the tasks share catalog, transaction, and protocol interfaces and must be implemented in sequence.
+Implementation was approved for inline execution and completed. Author review and test evidence are recorded in `docs/engineering/2026-10-13-local-core-implementation-review.md`. Merge, release, and live installation remain separate decisions.

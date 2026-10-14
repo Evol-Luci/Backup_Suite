@@ -114,12 +114,15 @@ The candidate differentiation is a provider-neutral local task record that ties 
 
 The implementation should be staged so that each stage leaves a usable, recoverable result:
 
-1. Establish the object store, checkpoint publication, verification, restore, and conservative garbage collection.
-2. Add Git import/export and validate non-destructive adoption on real projects.
-3. Add task records, parent-child workspaces, lifecycle updates, and CLI/API access.
+1. Establish the object store, checkpoint publication, verification, and restore. Conservative garbage collection remains deferred until workspace and retention references are defined.
+2. Add the per-user local core service, project registry, durable operation/event records, and canonical CLI/API access.
+3. Add task records, parent-child workspaces, and lifecycle updates.
 4. Add integration, configured checks, review policy, change receipts, and GUI status.
-5. Add local-folder replication and durable retry behavior.
-6. Add Google Drive only after local checkpoint, restore, and replication behavior is reliable.
+5. Add Git import/export and validate non-destructive adoption on real projects.
+6. Add conservative garbage collection, local-folder replication, and durable retry behavior.
+7. Add Google Drive only after local checkpoint, restore, and replication behavior is reliable.
+
+The local core and task ordering follows the approved `docs/superpowers/specs/2026-10-09-local-core-service-registry-design.md` milestone.
 
 Compare Solace against Git worktrees plus native Codex/Claude workflows and relevant alternative systems using real project workloads. Measure checkpoint and restore integrity, disk growth with binary-heavy histories, crash recovery, conflict-resolution effort, and time needed to understand task state. Make performance and usability claims only after those comparisons.
 

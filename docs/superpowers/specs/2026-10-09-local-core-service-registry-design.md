@@ -1,6 +1,6 @@
 # Local Core Service and Project Registry
 
-**Status:** Conversational design approved; artifact review requested
+**Status:** Approved; implemented in `codex/local-core-design` on 2026-10-13. Live user-manager installation remains pending.
 **Platform:** Linux first; systemd user services and Unix domain sockets
 **Product boundary:** Solace coordinates projects and local history. Codex, Claude, and other tools execute prompts; the core does not launch agents in this milestone.
 

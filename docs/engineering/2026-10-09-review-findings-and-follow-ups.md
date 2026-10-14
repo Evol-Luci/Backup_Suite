@@ -32,7 +32,7 @@ These items are part of the intended Solace product direction, but are outside t
 
 | Area | Work still needed |
 |---|---|
-| Local core | Per-user local service/socket, project registry, lifecycle management, and explicit local-filesystem/store placement checks. |
+| Local core | **Implemented and tested in `codex/local-core-design`, 2026-10-13:** private socket, registry, lifecycle/recovery, events, CLI, and local-store checks. Live user-manager installation/activation remains pending. |
 | Agent task flow | Parent/child tasks, isolated workspaces, task state/events, prompt retention/deletion policy, per-task and per-project automatic integration settings, and review gates. Solace manages work; Codex and Claude execute prompts. |
 | Human/agent interaction | CLI/API as the canonical control surface, terminal-friendly review/gate actions, and GUI status for prompts and concurrent agent work. |
 | Version-control workflows | Understandable merge/conflict explanations, text merge flow, binary previews/locks, and Git import/export without live dual-write synchronization. |
@@ -42,7 +42,7 @@ These items are part of the intended Solace product direction, but are outside t
 
 ## Suggested order
 
-1. Continue with the local core service/project registry, then the agent task lifecycle and CLI/GUI review surfaces. The implementation plan is [`../superpowers/plans/2026-10-13-local-core-service-registry.md`](../superpowers/plans/2026-10-13-local-core-service-registry.md), ready for written-plan review.
+1. Continue with the local core service/project registry, then the agent task lifecycle and CLI/GUI review surfaces. The implementation plan is [`../superpowers/plans/2026-10-13-local-core-service-registry.md`](../superpowers/plans/2026-10-13-local-core-service-registry.md), implemented and tested; live installation remains pending.
 2. Preserve interactive GUI rendering as a separate verification item; the existing Tk test execution gap is closed.
 
 ## Evidence
@@ -69,3 +69,7 @@ Verified in `.worktrees/local-core-design`, branch `codex/local-core-design`, ba
 - `python -m unittest discover -s tests -p 'test_*.py' -v` — 16 tests passed, including all seven branch-visualizer Tk tests. The Tk tests initially failed to access `:0` inside the sandbox; the same command passed with approved desktop-display access outside the sandbox.
 - Combined baseline: 65 passing tests. The two discovery commands cover separate test groups.
 - The next core milestone is planned; service, registry, and new commands are not implemented or installed by this continuation.
+
+## Local core implementation verification, 2026-10-13
+
+The approved plan is implemented in the development branch. All 114 tests pass (49 core, 49 engine, 16 legacy/Tk). Generated systemd units pass verification, inherited-descriptor subprocess activation is tested, and installer tests use isolated temporary HOME/XDG roots. Real-home installation and user-manager activation have not been performed. See [the implementation review](2026-10-13-local-core-implementation-review.md) for evidence, scope limits, and rulings.
