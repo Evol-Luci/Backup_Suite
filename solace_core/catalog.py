@@ -219,6 +219,10 @@ class ProjectCatalog:
             events.append(value)
         return events
 
+    def has_pending(self):
+        with self.connect() as db:
+            return db.execute("SELECT 1 FROM operations WHERE state IN ('queued','running') LIMIT 1").fetchone() is not None
+
     def recover_interrupted(self):
         with self.connect(write=True) as db:
             ids = [r[0] for r in db.execute("SELECT id FROM operations WHERE state IN ('queued','running')")]

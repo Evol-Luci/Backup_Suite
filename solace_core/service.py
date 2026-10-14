@@ -88,7 +88,7 @@ class CoreService:
         coordinator = self.coordinator(project)
         if method in ('project.relink', 'project.unregister'):
             with coordinator.lock:
-                if coordinator.busy:
+                if coordinator.busy and self.catalog(project).has_pending():
                     raise CoreError('PROJECT_BUSY', 'This project has queued or running operations.', 'Wait for its operations to finish before changing registration.', True)
                 if method == 'project.relink':
                     return self.registry.relink(project, Path(p['root']), Path(p['store']), p['confirmed_root'], reqid, actor)
@@ -127,7 +127,7 @@ class CoreService:
                     coordinator.submit(operation_id, lambda: self._work(catalog, operation_id, request))
                 return accepted
         with coordinator.lock:
-            if coordinator.busy:
+            if coordinator.busy and catalog.has_pending():
                 raise CoreError('PROJECT_BUSY', 'This project is processing an operation.', 'Inspect its operation or retry after completion.', True)
             repo = catalog.open_existing()
             if method == 'checkpoint.list':

@@ -58,6 +58,23 @@ class ServiceTests(unittest.TestCase):
         self.call('project.unregister',project=self.project)
         self.assertTrue(Path(record['store']).exists())
 
+    def test_committed_result_is_readable_before_worker_cleanup(self):
+        catalog=self.service.catalog(self.project)
+        committed,release=threading.Event(),threading.Event()
+        original=catalog.notify
+        def notify():
+            with catalog.connect() as db:
+                succeeded=db.execute("SELECT 1 FROM operations WHERE state='succeeded'").fetchone()
+            if succeeded:
+                committed.set();release.wait(5)
+            original()
+        try:
+            with patch.object(catalog,'notify',side_effect=notify):
+                operation=self.call('checkpoint.create',project=self.project,message='published')['operation_id']
+                self.assertTrue(committed.wait(3))
+                self.assertEqual(len(self.call('checkpoint.list',project=self.project)['checkpoints']),1)
+        finally: release.set()
+
     def test_completed_restore_retry_returns_original_operation(self):
         capture=self.call('checkpoint.create',project=self.project,message='base')['operation_id']
         checkpoint=self.wait_operation(capture)['result']['checkpoint_id']
