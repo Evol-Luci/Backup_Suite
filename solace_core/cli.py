@@ -72,8 +72,8 @@ def _resolve(client, project):
     raise CoreError('PROJECT_NOT_FOUND','The project is not registered.','Use its exact ID or canonical source root.')
 
 
-def _doctor(client, project):
-    result=client.request('doctor',{'project':project} if project else {})
+def _doctor(client, project, connectivity_error=None):
+    result=response(None, error=connectivity_error) if client is None else client.request('doctor',{'project':project} if project else {})
     if result['ok']:
         result['result']['core']={'ok':True}
         return result
@@ -98,10 +98,15 @@ def main(argv=None):
         globals_,remaining=common.parse_known_args(argv)
         as_json=globals_.json
         args=_parser().parse_args(remaining)
-        client=CoreClient(globals_.socket)
         if args.command=='doctor':
-            result=_doctor(client,args.project);emit(result,as_json)
+            try:
+                client=CoreClient(globals_.socket)
+                result=_doctor(client,args.project)
+            except Exception as error:
+                result=_doctor(None,args.project,classify(error))
+            emit(result,as_json)
             return 0 if result['result']['ok'] else 3
+        client=CoreClient(globals_.socket)
         params={}
         if hasattr(args,'project'):params['project']=_resolve(client,args.project)
         method=args.command+'.'+args.action

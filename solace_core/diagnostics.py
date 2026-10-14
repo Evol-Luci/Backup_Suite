@@ -28,6 +28,9 @@ def inspect(registration, policy=None):
 
 def inspect_registry(registry, project=None):
     try:
+        if not registry.read_only:
+            from .registry import Registry
+            registry = Registry(registry.path, registry.policy, read_only=True)
         if project:
             records = [registry.get(registry.resolve(project))]
         else:

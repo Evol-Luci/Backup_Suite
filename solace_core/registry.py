@@ -67,6 +67,15 @@ class Registry:
             raise CoreError('STORE_UNAVAILABLE', 'The registry is unavailable or replaced.', 'Recover the original registry; no replacement is created.')
         if write and self.read_only:
             raise CoreError('PERMISSION_DENIED', 'This registry handle is read-only.', 'Use the local core for mutations.')
+        if not write and self.read_only:
+            try:
+                with readonly_database(self.path) as db:
+                    db.row_factory = sqlite3.Row
+                    self._version(db)
+                    yield db
+            except sqlite3.DatabaseError as error:
+                raise classify(error) from error
+            return
         try:
             db = sqlite3.connect(self.path.as_uri() + ('?mode=rw' if write else '?mode=ro'), uri=True, timeout=30)
             db.row_factory = sqlite3.Row
@@ -106,6 +115,18 @@ class Registry:
         if not row:
             raise CoreError('PROJECT_NOT_FOUND', 'The project is not registered.', 'List registered projects or explicitly add the source root.')
         return dict(row)
+
+    def retired_registration(self, project_id):
+        """Read retained location receipts without restoring a registration."""
+        keys = ('id', 'root', 'store', 'store_uuid', 'mount_id', 'created_at')
+        with self.connect() as db:
+            rows = db.execute('SELECT response_json FROM requests ORDER BY rowid DESC')
+            for row in rows:
+                value = json.loads(row[0])
+                if value.get('id') == project_id and all(key in value for key in keys):
+                    return {key: value[key] for key in keys}
+        raise CoreError('PROJECT_NOT_FOUND', 'No retained project location is available.',
+                        'Use a registered project or preserve its original store for recovery.')
 
     def _available(self, record):
         result = dict(record)
