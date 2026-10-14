@@ -28,6 +28,7 @@ class ProjectRepository:
     """Capture project trees into one project's private checkpoint store."""
 
     def __init__(self, project_root: Path, store_dir: Path):
+        self._existing_only = False
         requested_root = Path(project_root)
         if not requested_root.is_dir() or requested_root.is_symlink():
             raise InvalidProjectPath(f"project directory is unavailable: {project_root}")
@@ -79,9 +80,48 @@ class ProjectRepository:
             """)
             connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
+    @classmethod
+    def open_existing(cls, project_root: Path, store_dir: Path):
+        """Open an existing store without initializing or replacing anything."""
+        instance = cls.__new__(cls)
+        instance._existing_only = True
+        instance.project_root = Path(project_root)
+        instance.store_dir = Path(store_dir)
+        if (not instance.project_root.is_dir() or instance.project_root.is_symlink()
+                or not instance.store_dir.is_dir() or instance.store_dir.is_symlink()):
+            raise InvalidProjectPath("project or store is unavailable")
+        instance.project_root = instance.project_root.resolve()
+        instance.store_dir = instance.store_dir.resolve()
+        instance._project_identity = instance.project_root.stat()
+        instance._store_identity = instance.store_dir.stat()
+        if os.path.samestat(instance._project_identity, instance._store_identity):
+            raise InvalidProjectPath("store directory cannot be the project root")
+        instance.database_path = instance.store_dir / "checkpoints.sqlite3"
+        if instance.database_path.is_symlink() or not instance.database_path.is_file():
+            raise InvalidProjectPath("checkpoint database is unavailable")
+        instance._database_identity = instance.database_path.stat()
+        instance.object_store = ObjectStore.open_existing(instance.store_dir)
+        with instance._connect() as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_VERSION:
+                raise InvalidProjectPath("unsupported checkpoint schema version")
+        return instance
+
+    def _validate_existing_identity(self):
+        if not self._existing_only:
+            return
+        try:
+            for path, identity in ((self.store_dir, self._store_identity),
+                                   (self.database_path, self._database_identity)):
+                if path.is_symlink() or not os.path.samestat(identity, path.stat()):
+                    raise InvalidProjectPath("registered store identity changed")
+        except OSError as error:
+            raise InvalidProjectPath("registered store is unavailable") from error
+
     @contextmanager
     def _connect(self):
-        connection = sqlite3.connect(self.database_path, timeout=30)
+        self._validate_existing_identity()
+        target = self.database_path.as_uri() + "?mode=rw" if self._existing_only else self.database_path
+        connection = sqlite3.connect(target, timeout=30, uri=self._existing_only)
         try:
             connection.execute("PRAGMA busy_timeout = 30000")
             connection.execute("PRAGMA journal_mode = WAL")
