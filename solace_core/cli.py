@@ -66,6 +66,9 @@ def _resolve(client, project):
     for record in listing['result']['projects']:
         if project == record['id'] or str(Path(project).resolve()) == record['root']:
             return record['id']
+    # Exact stable IDs can name an unregistered project for idempotent receipt replay.
+    if len(project) == 32 and all(c in '0123456789abcdef' for c in project):
+        return project
     raise CoreError('PROJECT_NOT_FOUND','The project is not registered.','Use its exact ID or canonical source root.')
 
 

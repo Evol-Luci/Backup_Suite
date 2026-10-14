@@ -69,3 +69,16 @@ class FoundationsTests(unittest.TestCase):
         self.assert_code('UNSUPPORTED_STORAGE', StoragePolicy(mountinfo='1 0 0:1 / / ro - ext4 x ro\n').check, self.base)
         self.assert_code('UNSUPPORTED_STORAGE', StoragePolicy(mountinfo=mountinfo, sync_roots=[self.base]).check, self.base)
         self.assert_code('STORE_UNAVAILABLE', policy.check, self.base / 'absent')
+
+    def test_configured_sync_root_rejects_store(self):
+        from unittest.mock import patch
+        config=self.base/'solace';config.mkdir()
+        sync=self.base/'custom-sync';sync.mkdir()
+        (config/'core-config.json').write_text(json.dumps({'sync_roots':[str(sync)]}))
+        with patch.dict(os.environ,{'XDG_DATA_HOME':str(self.base)}):
+            policy=StoragePolicy(mountinfo='1 0 0:1 / / rw - ext4 x rw\n')
+            self.assert_code('UNSUPPORTED_STORAGE',policy.check,sync)
+
+    def test_api_paths_are_absolute(self):
+        self.assert_code('INVALID_REQUEST',validate_request,
+                         self.request(method='project.add',params={'root':'.'}))

@@ -110,7 +110,8 @@ class ProjectRepository:
         if not self._existing_only:
             return
         try:
-            for path, identity in ((self.store_dir, self._store_identity),
+            for path, identity in ((self.project_root, self._project_identity),
+                                   (self.store_dir, self._store_identity),
                                    (self.database_path, self._database_identity)):
                 if path.is_symlink() or not os.path.samestat(identity, path.stat()):
                     raise InvalidProjectPath("registered store identity changed")

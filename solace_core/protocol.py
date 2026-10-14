@@ -2,6 +2,7 @@
 import hashlib
 import json
 import uuid
+from pathlib import Path
 from .errors import CoreError, invalid
 
 MAX_FRAME = 1024 * 1024
@@ -83,6 +84,9 @@ def validate_request(value):
                 raise invalid('Exclusions must be strings.')
         elif not isinstance(item, str) or '\0' in item or (key not in ('message','confirmed_root') and not item):
             raise invalid('Parameter must be a nonempty string.')
+    for key in ('root','store','destination'):
+        if key in params and not Path(params[key]).is_absolute():
+            raise invalid('API filesystem paths must be absolute.')
     return value
 
 

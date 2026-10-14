@@ -2,7 +2,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from .errors import CoreError
+import os
+import json
+from .errors import CoreError, invalid
 
 LOCAL_FILESYSTEMS = {'ext2', 'ext3', 'ext4', 'btrfs', 'xfs', 'f2fs', 'zfs'}
 
@@ -19,8 +21,22 @@ class StorageLocation:
 class StoragePolicy:
     def __init__(self, mountinfo=None, sync_roots=None):
         self.mountinfo = mountinfo
-        self.sync_roots = [Path(p).resolve() for p in (sync_roots if sync_roots is not None else
-                           [Path.home() / name for name in ('Dropbox', 'Google Drive', 'Nextcloud')])]
+        if sync_roots is None:
+            sync_roots = [Path.home() / name for name in ('Dropbox', 'Google Drive', 'Nextcloud')]
+            data = Path(os.environ.get('XDG_DATA_HOME') or str(Path.home() / '.local/share'))
+            config = data / 'solace/core-config.json'
+            if config.exists():
+                try:
+                    value = json.loads(config.read_text())
+                    configured = value.get('sync_roots', [])
+                    if (not isinstance(value, dict) or set(value) - {'sync_roots'}
+                            or not isinstance(configured, list)
+                            or any(not isinstance(p, str) or not Path(p).is_absolute() or '\0' in p for p in configured)):
+                        raise ValueError()
+                    sync_roots += configured
+                except (ValueError, TypeError, AttributeError, OSError) as error:
+                    raise invalid('The core configuration must contain only absolute sync_roots paths.') from error
+        self.sync_roots = [Path(p).resolve() for p in sync_roots]
 
     def check(self, path, *, creating=False):
         path = Path(path).resolve()

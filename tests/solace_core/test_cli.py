@@ -73,3 +73,11 @@ class CLITests(unittest.TestCase):
         before=contents();report=inspect(record,self.policy)
         self.assertEqual(report['error']['code'],'DATABASE_CORRUPT')
         self.assertEqual(contents(),before)
+
+    def test_unregister_retry_by_id_replays_receipt(self):
+        request_id=str(uuid.uuid4())
+        first=self.run_cli('project','unregister',self.project,'--request-id',request_id,'--json')
+        second=self.run_cli('project','unregister',self.project,'--request-id',request_id,'--json')
+        self.assertEqual(first.returncode,0,first.stderr)
+        self.assertEqual(second.returncode,0,second.stderr)
+        self.assertEqual(json.loads(first.stdout)['result'],json.loads(second.stdout)['result'])

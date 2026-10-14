@@ -101,3 +101,16 @@ class CatalogTests(unittest.TestCase):
         self.store.symlink_to(self.base / 'old', target_is_directory=True)
         with self.assertRaises(CoreError):
             catalog.open_existing()
+
+    def test_source_root_replacement_prevents_publication(self):
+        repo=self.create().open_existing()
+        original=repo._scan
+        def replace(exclusions):
+            result=original(exclusions)
+            self.project.rename(self.base/'old-source')
+            self.project.mkdir()
+            return result
+        with patch.object(repo,'_scan',side_effect=replace):
+            with self.assertRaises(InvalidProjectPath): repo.create_checkpoint('mixed identity')
+        with closing(sqlite3.connect(self.store/'checkpoints.sqlite3')) as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM checkpoints').fetchone()[0],0)

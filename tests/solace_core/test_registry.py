@@ -107,3 +107,10 @@ class RegistryTests(unittest.TestCase):
         result = self.registry.reconcile_intents()
         self.assertEqual(result[0]['state'], 'interrupted')
         self.assertEqual(list((self.base/'data/projects').iterdir()), [])
+
+    def test_missing_previous_registry_is_not_replaced(self):
+        from solace_core.service import CoreService
+        service=CoreService(self.registry);service.close()
+        self.registry.path.unlink()
+        with self.assertRaises(CoreError): Registry(self.registry.path,self.policy)
+        self.assertFalse(self.registry.path.exists())

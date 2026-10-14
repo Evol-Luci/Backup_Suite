@@ -32,7 +32,7 @@ class Registry:
                 self._version(db)
         else:
             self.policy.check(self.path.parent, creating=True)
-            if self.projects.is_dir() and any(self.projects.iterdir()):
+            if (self.path.parent / 'core.lock').exists() or (self.projects.is_dir() and any(self.projects.iterdir())):
                 raise CoreError('STORE_UNAVAILABLE', 'The registry is missing but project stores remain.', 'Preserve the stores and recover the original registry.')
             self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             with sqlite3.connect(self.path) as db:
