@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-09-local-core-service-registry-design.md`.
 
-**Execution status:** Approved 2026-10-13; all eight implementation tasks completed and tested. Real user-manager installation/activation remains pending separate authorization.
+**Execution status:** Approved 2026-10-13; all eight implementation tasks completed and tested. Independent-review remediation and real user-manager installation/acceptance completed with authorization on 2026-10-15.
 
 ## Global Constraints
 
@@ -417,7 +417,7 @@ RestrictAddressFamilies=AF_UNIX
 No service `WantedBy`: enable the socket alone. Do not enable lingering. Test paths with spaces and systemd escaping; reject newlines/control characters in install paths. Write logs to the journal, without request bodies or prompt/message contents.
 - [x] Prepare an idempotent installer with a preview mode displaying exact files and commands. Preserve pre-existing unit/launcher files in a timestamped backup before replacement; fail rather than overwrite an unknown runtime directory. Installer output provides rollback commands. Live install/enable requires the user's explicit install authorization and any filesystem escalation; plan implementation does not authorize it.
 - [x] Run all core/engine/legacy/Tk tests and `git diff --check`. Run `systemd-analyze --user verify` on substituted test units. Perform the inherited-FD subprocess test without modifying user services. Document live systemd testing as pending unless installation is authorized.
-- [ ] For authorized live acceptance, enable/start only `solace-core.socket`, verify `0600`, trigger `solace core status`, confirm the service becomes active, and use an isolated temporary project to add/create/watch/verify/unregister. Confirm the store survives unregister, restart recovery works, and the process has only Unix listeners. Restore previous units/launcher on rollback; preserve stores. Report installed versus tested-in-subprocess evidence separately.
+- [x] For authorized live acceptance, enable/start only `solace-core.socket`, verify `0600`, trigger `solace core status`, confirm the service becomes active, and use an isolated temporary project to add/create/watch/verify/unregister. Confirm the store survives unregister, restart recovery works, and the process has only Unix listeners. Restore previous units/launcher on rollback; preserve stores. Report installed versus tested-in-subprocess evidence separately.
 - [x] Update `docs/local-core.md` with commands, errors, storage limits, interruption recovery, event cursor rules, no automatic migration, and install/rollback instructions; commit `feat: package systemd activation for the local core`.
 
 ## Review and handoff
@@ -441,4 +441,4 @@ No service `WantedBy`: enable the socket alone. Do not enable lingering. Test pa
 | Legacy vault and Git compatibility | Tasks 3, 7–8; no registration scan/source writes and unchanged legacy regressions |
 | Packaging/install evidence | Task 8; inherited-FD tests first, live activation after installation authorization |
 
-Implementation was approved for inline execution and completed. Author review and test evidence are recorded in `docs/engineering/2026-10-13-local-core-implementation-review.md`. Merge, release, and live installation remain separate decisions.
+Implementation was approved for inline execution and completed. Author review and test evidence are recorded in `docs/engineering/2026-10-13-local-core-implementation-review.md`. Independent-review fixes, installation, and live acceptance are recorded in `docs/engineering/2026-10-14-local-core-independent-review-and-acceptance.md`. Local integration was authorized; remote publication and further feature work remain separate.

@@ -11,7 +11,7 @@ Run from this checkout:
 systemd-analyze --user verify /tmp/solace-core-install-preview/solace-core.socket /tmp/solace-core-install-preview/solace-core.service
 ```
 
-Preview prints exact destinations, runtime contents, and activation commands; it does not modify your home directory. This milestone has been tested with inherited listening descriptors in subprocesses and an isolated temporary install. Installation and activation in the real user manager remain a separate authorization step.
+Preview prints exact destinations, runtime contents, and activation commands; it does not modify your home directory. This milestone passed subprocess activation tests, isolated installer tests, and 28 acceptance checks through the real systemd user manager on 2026-10-15. See `docs/engineering/2026-10-14-local-core-independent-review-and-acceptance.md` for installation and rollback evidence.
 
 After reviewing the preview and authorizing installation:
 
@@ -94,4 +94,4 @@ python -m unittest discover -s tests/solace_engine -p 'test_*.py' -v
 python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-Tk tests require desktop-display access. Activation tests keep the runtime socket in a private temporary directory and place their temporary database on the checkout's local filesystem. Tests do not change installed user units. Full interactive GUI rendering, live user-manager activation, and sudden-power-loss behavior remain separate validation items. Processes running maliciously as the same user are outside the threat model.
+Tk tests require desktop-display access. Activation tests keep the runtime socket in a private temporary directory and place their temporary database on the checkout's local filesystem. Tests do not change installed user units. Full interactive GUI rendering, actual desktop logout/session-end behavior, and sudden-power-loss behavior remain separate validation items. Live user-manager activation and deliberate process-termination recovery passed on 2026-10-15. Processes running maliciously as the same user are outside the threat model.

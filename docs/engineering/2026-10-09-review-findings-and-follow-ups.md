@@ -73,3 +73,7 @@ Verified in `.worktrees/local-core-design`, branch `codex/local-core-design`, ba
 ## Local core implementation verification, 2026-10-13
 
 The approved plan is implemented in the development branch. All 114 tests pass (49 core, 49 engine, 16 legacy/Tk). Generated systemd units pass verification, inherited-descriptor subprocess activation is tested, and installer tests use isolated temporary HOME/XDG roots. Real-home installation and user-manager activation have not been performed. See [the implementation review](2026-10-13-local-core-implementation-review.md) for evidence, scope limits, and rulings.
+
+## Installed core acceptance, 2026-10-15
+
+A separate reviewer identified five Important edge-case findings. Reproductions and bounded fixes passed, with 122 total automated tests (57 core, 49 engine, 16 legacy/Tk). The reviewed core was then installed and passed 28 real systemd/CLI acceptance checks, including deliberate process termination and automatic restart recovery. The final registry is empty and doctor is healthy; the small fixture store was preserved after unregister. See [the independent-review and live-acceptance record](2026-10-14-local-core-independent-review-and-acceptance.md) for evidence and rollback. Actual logout behavior and full interactive GUI rendering remain unverified.
