@@ -23,6 +23,7 @@ class CoreService:
         self.workspace_paths=WorkspacePaths(registry,self.config,registry.policy)
         registry.workspace_guard=self.workspace_paths.guard_source
         self._closed = False
+        self.maintenance = None
         self._guard = threading.RLock()
         self._catalogs, self._coordinators = {}, {}
         self._pending_recovery = set()
@@ -43,6 +44,9 @@ class CoreService:
                     self.catalog(record['id'])
                 except Exception as error:
                     self.recovery.append(dict(project=record['id'], error=classify(error).as_dict()))
+            from .maintenance import PromptMaintenance
+            self.maintenance=PromptMaintenance(self)
+            self.maintenance.start()
         except BaseException:
             self.close()
             raise
@@ -51,6 +55,7 @@ class CoreService:
         with self._guard:
             if self._closed: return
             self._closed = True
+        if self.maintenance is not None: self.maintenance.close()
         self.executor.shutdown(wait=True)
         os.close(self._lock_fd)
 
