@@ -50,6 +50,7 @@ class TaskOperations:
 
     def accept(self,request):
         require_tasks(self.catalog)
+        if request['method']=='workspace.recovery.resume': return self.accept_resume(request)
         p=request['params'];method=request['method'];task_id=p['task']
         with self.catalog.connect(write=True) as db:
             cached=self.tasks.lookup_request(request,db)
@@ -136,7 +137,8 @@ class TaskOperations:
         try:
             self.catalog.transition(operation,'running')
             method=request['method']
-            if method=='task.start': self.start(operation)
+            if method=='workspace.recovery.resume': self.resume_publication(operation)
+            elif method=='task.start': self.start(operation)
             elif method=='workspace.status': self.refresh(operation)
             else: self.capture(operation,request)
         except Exception as error:
@@ -145,11 +147,11 @@ class TaskOperations:
                     current=self.catalog.get_operation(operation)
                     if current['state'] in ('queued','running'):
                         with self.catalog.connect(write=True) as db:
-                            intent=rowdict(db,'SELECT * FROM workspace_intents WHERE operation_id=?',(operation,))
+                            intent=rowdict(db,'SELECT * FROM workspace_intents WHERE operation_id=? OR recovery_operation_id=?',(operation,operation))
                             unresolved=intent and (intent['staging_identity_json'] or os.path.lexists(intent['final_path']))
                             if not unresolved:
                                 self.tasks.release(db,operation)
-                                if intent: db.execute("UPDATE workspace_intents SET phase='abandoned' WHERE operation_id=?",(operation,))
+                                if intent: db.execute("UPDATE workspace_intents SET phase='abandoned' WHERE operation_id=?",(intent['operation_id'],))
                             self.catalog._transition(db,operation,'failed',error=classify(error).as_dict())
                         self.catalog.notify()
                 except Exception:
@@ -250,3 +252,166 @@ class TaskOperations:
             db.execute('UPDATE workspaces SET observed_at=?,observed_json=? WHERE id=?',(report['observed_at'],json.dumps(report),workspace['id']))
             self.catalog._transition(db,operation,'succeeded',result=report,kind='workspace.observed');self.tasks.release(db,operation)
         self.catalog.notify()
+
+    def recover_interrupted(self):
+        return self.catalog.recover_interrupted()
+
+    def recovery_intent(self,db,operation):
+        intent=rowdict(db,'SELECT * FROM workspace_intents WHERE operation_id=? OR recovery_operation_id=?',(operation,operation))
+        if intent is None:
+            raise CoreError('RECOVERY_REQUIRED','There is no workspace intent for this operation.','Inspect the operation result and preserved files.')
+        return intent
+
+    def inspect_recovery(self,operation_id):
+        with self.catalog.connect() as db:
+            intent=self.recovery_intent(db,operation_id)
+            operation=rowdict(db,'SELECT state FROM operations WHERE id=?',(intent['operation_id'],))
+            advertised=db.execute('SELECT 1 FROM workspaces WHERE id=?',(intent['workspace_id'],)).fetchone() is not None
+        return dict(operation_id=intent['operation_id'],operation_state=operation['state'],task_id=intent['task_id'],
+            kind=intent['kind'],phase=intent['phase'],staging_path=intent['staging_path'],final_path=intent['final_path'],
+            staging_identity=json.loads(intent['staging_identity_json']) if intent['staging_identity_json'] else None,
+            final_identity=json.loads(intent['final_identity_json']) if intent['final_identity_json'] else None,
+            base_checkpoint=intent['base_checkpoint'],recovery_operation_id=intent['recovery_operation_id'],workspace_advertised=advertised)
+
+    def _recoverable(self,db,request):
+        p=request['params'];intent=self.recovery_intent(db,p['operation'])
+        if intent['task_id']!=p['task']:
+            raise CoreError('TASK_NOT_FOUND','This recovery intent belongs to another task.','Use its recorded task ID.')
+        task=self.tasks.assert_revision(db,p['task'],p['expected_revision'])
+        owner=intent['recovery_operation_id'] or intent['operation_id']
+        state=db.execute('SELECT state FROM operations WHERE id=?',(owner,)).fetchone()[0]
+        if state not in ('failed','interrupted') or intent['phase'] in ('committed','abandoned'):
+            raise CoreError('RECOVERY_REQUIRED','This intent is not awaiting recovery.','Inspect its current operation and phase.')
+        return intent,owner
+
+    def accept_resume(self,request):
+        with self.catalog.connect(write=True) as db:
+            cached=self.tasks.lookup_request(request,db)
+            if cached is not None: return cached
+            intent,owner=self._recoverable(db,request)
+            context=json.loads(intent['expected_json']);self.check(db,owner,context)
+            operation=uuid.uuid4().hex;now=self.catalog._now();context['recovery_of']=intent['operation_id']
+            db.execute('INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                (operation,request['id'],fingerprint(request['method'],request['params'],request['actor']),request['method'],request['actor'],'queued',now,now,None,None,json.dumps(context)))
+            db.execute('UPDATE task_claims SET operation_id=? WHERE operation_id=?',(operation,owner))
+            db.execute('UPDATE workspace_intents SET recovery_operation_id=? WHERE operation_id=?',(operation,intent['operation_id']))
+            self.catalog._event(db,dict(id=operation,actor=request['actor']),'operation.queued','queued',dict(task_id=intent['task_id']))
+        self.catalog.notify();self.coordinator.submit(operation,lambda:self.run(operation,request))
+        return dict(operation_id=operation)
+
+    def resume_publication(self,operation):
+        from .workspace_trees import _verify_tree,_targets,validate_workspace_links
+        with self.coordinator.lock,self.catalog.connect() as db:
+            intent=self.recovery_intent(db,operation);context=json.loads(intent['expected_json']);self.check(db,operation,context)
+        if intent['kind']=='relink':
+            return self.finish_relink(operation,intent)
+        checkpoint=intent['base_checkpoint']
+        if checkpoint is None or intent['staging_identity_json'] is None:
+            raise CoreError('RECOVERY_REQUIRED','No complete recorded workspace can be resumed.','Explicitly abandon this preparation; its files will be preserved.')
+        expected=json.loads(intent['staging_identity_json'])
+        repo=ProjectRepository.open_existing(self.catalog.store.parent,self.catalog.store)
+        entries=repo.get_file_entries(checkpoint);validate_workspace_links(entries,_targets(repo,entries))
+        final=Path(intent['final_path']);staging=Path(intent['staging_path'])
+        if os.path.lexists(final):
+            identity=self.paths.validate(final)
+            if any(identity[k]!=expected[k] for k in ('mount_id','device','inode')):
+                raise CoreError('WORKSPACE_IDENTITY_MISMATCH','The final directory does not match the recorded staging identity.','Preserve it and explicitly abandon or inspect the intent.')
+            _verify_tree(repo,checkpoint,final)
+        elif os.path.lexists(staging):
+            self.paths.validate(staging,expected=expected);_verify_tree(repo,checkpoint,staging)
+            identity=WorkspaceBuilder(self.catalog,self.paths).publish(intent,dict(identity=expected,checkpoint_id=checkpoint))
+        else:
+            raise CoreError('WORKSPACE_UNAVAILABLE','Neither recorded staging nor final workspace is available.','Reconnect storage or explicitly abandon this preparation.')
+        self.finish_start(operation,intent,identity)
+
+    def abandon(self,request):
+        with self.catalog.connect(write=True) as db:
+            cached=self.tasks.lookup_request(request,db)
+            if cached is not None: return cached
+            intent,owner=self._recoverable(db,request)
+            db.execute("UPDATE workspace_intents SET phase='abandoned' WHERE operation_id=?",(intent['operation_id'],))
+            self.tasks.release(db,owner)
+            result=dict(task_id=intent['task_id'],operation_id=intent['operation_id'],abandoned=True,files_preserved=True)
+            self.tasks.event(db,request,'workspace.preparation.abandoned','succeeded',dict(task_id=intent['task_id'],operation_id=intent['operation_id']))
+            self.tasks.save_request(db,request,result)
+        self.catalog.notify();return result
+
+    def cleanup_staging(self,request):
+        import hashlib
+        p=request['params']
+        with self.catalog.connect() as db:
+            cached=self.tasks.lookup_request(request,db)
+            if cached is not None: return cached
+            intent=self.recovery_intent(db,p['operation'])
+            if intent['phase']!='abandoned' or not intent['staging_identity_json']:
+                raise CoreError('RECOVERY_REQUIRED','Only recorded abandoned unpublished staging can be cleaned.','Inspect and explicitly abandon the operation first.')
+            if db.execute('SELECT 1 FROM task_claims WHERE task_id=?',(intent['task_id'],)).fetchone():
+                raise CoreError('TASK_BUSY','This task is owned by a core operation.','Wait for the operation to finish.')
+        staging=Path(intent['staging_path']);expected=json.loads(intent['staging_identity_json'])
+        if staging==Path(intent['final_path']) or staging.name!='.staging-'+intent['operation_id']:
+            raise CoreError('RECOVERY_REQUIRED','The staging path is not operation-owned.','Preserve it for manual inspection.')
+        if not os.path.lexists(staging):
+            raise CoreError('WORKSPACE_UNAVAILABLE','The recorded staging directory is absent.','No files were deleted; inspect existing cleanup receipts.')
+        parent_expected=json.loads(intent['expected_json'])['destination_parent']
+        with self.paths.open_checked(staging,expected) as fd:
+            entries=staging_entries(fd)
+        token=hashlib.sha256(json.dumps(dict(operation=intent['operation_id'],identity=expected,entries=entries),sort_keys=True).encode()).hexdigest()
+        if p['preview']:
+            return dict(operation_id=intent['operation_id'],staging_path=str(staging),entry_count=len(entries),plan_token=token)
+        if p.get('plan_token')!=token:
+            raise CoreError('RECOVERY_PREVIEW_STALE','Staging changed after preview.','Review a new staging cleanup preview.')
+        with self.paths.open_checked(staging.parent,parent_expected) as parent_fd:
+            fd=os.open(staging.name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent_fd)
+            try:
+                if (os.fstat(fd).st_dev,os.fstat(fd).st_ino)!=(expected['device'],expected['inode']):
+                    raise CoreError('RECOVERY_PREVIEW_STALE','Staging identity changed.','Review a new cleanup preview.')
+                if staging_entries(fd)!=entries:
+                    raise CoreError('RECOVERY_PREVIEW_STALE','Staging entries changed.','Review a new cleanup preview.')
+                remove_staging_entries(fd,entries)
+            finally: os.close(fd)
+            current=os.stat(staging.name,dir_fd=parent_fd,follow_symlinks=False)
+            if (current.st_dev,current.st_ino)!=(expected['device'],expected['inode']):
+                raise CoreError('RECOVERY_PREVIEW_STALE','Staging was replaced during cleanup.','Preserve the replacement directory.')
+            os.rmdir(staging.name,dir_fd=parent_fd);os.fsync(parent_fd)
+        result=dict(operation_id=intent['operation_id'],staging_cleaned=True)
+        with self.catalog.connect(write=True) as db:
+            self.tasks.event(db,request,'workspace.staging.cleaned','succeeded',dict(operation_id=intent['operation_id']))
+            self.tasks.save_request(db,request,result)
+        self.catalog.notify();return result
+
+
+def staging_entries(directory_fd,prefix=''):
+    import stat
+    rows=[]
+    for name in sorted(os.listdir(directory_fd)):
+        metadata=os.stat(name,dir_fd=directory_fd,follow_symlinks=False)
+        relative=prefix+name
+        rows.append(dict(path=relative,device=metadata.st_dev,inode=metadata.st_ino,mode=metadata.st_mode,
+                         size=metadata.st_size,mtime=metadata.st_mtime_ns,ctime=metadata.st_ctime_ns))
+        if stat.S_ISDIR(metadata.st_mode):
+            fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directory_fd)
+            try:
+                if not os.path.samestat(metadata,os.fstat(fd)): raise CoreError('RECOVERY_PREVIEW_STALE','A staging entry changed.','Review a new cleanup preview.')
+                rows.extend(staging_entries(fd,relative+'/'))
+            finally: os.close(fd)
+    return rows
+
+
+def remove_staging_entries(directory_fd,entries,prefix=''):
+    import stat
+    direct=[row for row in entries if row['path'].startswith(prefix) and '/' not in row['path'][len(prefix):]]
+    for row in direct:
+        name=row['path'][len(prefix):];metadata=os.stat(name,dir_fd=directory_fd,follow_symlinks=False)
+        actual=(metadata.st_dev,metadata.st_ino,metadata.st_mode,metadata.st_size,metadata.st_mtime_ns,metadata.st_ctime_ns)
+        wanted=tuple(row[key] for key in ('device','inode','mode','size','mtime','ctime'))
+        if actual!=wanted: raise CoreError('RECOVERY_PREVIEW_STALE','A staging entry changed during cleanup.','Inspect the remaining staging; no replacement was followed.')
+        if stat.S_ISDIR(metadata.st_mode):
+            fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=directory_fd)
+            try:
+                if not os.path.samestat(metadata,os.fstat(fd)): raise CoreError('RECOVERY_PREVIEW_STALE','A staging directory changed.','Inspect its remaining entries.')
+                remove_staging_entries(fd,entries,row['path']+'/')
+            finally: os.close(fd)
+            final=os.stat(name,dir_fd=directory_fd,follow_symlinks=False)
+            if not os.path.samestat(metadata,final): raise CoreError('RECOVERY_PREVIEW_STALE','A staging directory was replaced.','Preserve the replacement.')
+            os.rmdir(name,dir_fd=directory_fd)
+        else: os.unlink(name,dir_fd=directory_fd)

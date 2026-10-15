@@ -31,6 +31,10 @@ TASK_PARAMS = {
     'task.prompt.show': ({'project','task'},set()),
     'task.prompt.delete': ({'project','task','expected_revision'},set()),
     'workspace.status': ({'project','task'},{'refresh'}),
+    'workspace.recovery.show': ({'project','operation'},set()),
+    'workspace.recovery.resume': ({'project','operation','task','expected_revision'},set()),
+    'workspace.recovery.abandon': ({'project','operation','task','expected_revision'},set()),
+    'workspace.staging.cleanup': ({'project','operation','preview'},{'plan_token'}),
     'workspace.checkpoint': ({'project','task','expected_revision','message'},set()),
 }
 PARAMS.update(TASK_PARAMS)

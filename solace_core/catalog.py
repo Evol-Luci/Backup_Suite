@@ -245,6 +245,10 @@ class ProjectCatalog:
             for operation in ids:
                 error = CoreError('OPERATION_INTERRUPTED', 'The core stopped before a committed result.', 'Inspect the operation and any restore destination before starting new work.').as_dict()
                 self._transition(db, operation, 'interrupted', error=error)
+                if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] == 2:
+                    intent=db.execute("SELECT phase FROM workspace_intents WHERE operation_id=? OR recovery_operation_id=?",(operation,operation)).fetchone()
+                    if intent is None or intent[0] in ('committed','abandoned'):
+                        db.execute('DELETE FROM task_claims WHERE operation_id=?',(operation,))
         if ids:
             self.notify()
         return ids

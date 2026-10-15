@@ -154,6 +154,7 @@ class CoreService:
                     if not registered: raise CoreError('PROJECT_NOT_FOUND','The project is no longer registered.','Register it before upgrading.')
                     return preview_upgrade(catalog) if p['preview'] else apply_upgrade(catalog,p.get('plan_token'),request)
                 require_tasks(catalog);tasks=TaskCatalog(catalog);prompts=PromptStore(catalog)
+                if method=='workspace.recovery.show': return TaskOperations(self,catalog).inspect_recovery(p['operation'])
                 if method=='task.show': return tasks.show(p['task'])
                 if method=='task.list': return dict(tasks=tasks.list(p.get('parent')))
                 if method=='task.prompt.show': return prompts.read(p['task'])
@@ -163,6 +164,8 @@ class CoreService:
                 with catalog.connect() as db: cached=tasks.lookup_request(request,db)
                 if cached is not None: return cached
                 if not registered: raise CoreError('PROJECT_NOT_FOUND','The project is no longer registered.','Retained records are read-only.')
+                if method=='workspace.recovery.abandon': return TaskOperations(self,catalog).abandon(request)
+                if method=='workspace.staging.cleanup': return TaskOperations(self,catalog).cleanup_staging(request)
                 if method=='task.create': return tasks.create(request)
                 if method=='task.prompt.delete': return prompts.delete(request)
                 if method=='project.prompt-policy.set': return prompts.set_policy(request)
