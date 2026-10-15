@@ -85,3 +85,9 @@ systemctl --user daemon-reload
 ```
 
 Live installation and acceptance are complete. Local branch integration follows this evidence commit. Remote publication and the next task/workspace feature milestone are separate work.
+
+## Local integration, 2026-10-15
+
+Fetched the current remote references and verified `origin/main` was an ancestor of the reviewed branch. The clean local `main` checkout was fast-forwarded to `e5ab1bb`, including all reviewed code and installed-acceptance evidence. All three suites passed again on that integrated checkout: **122 tests**. The worktree was clean and `git diff --check` passed. This final documentation commit records that completed integration; no remote push or publication was performed.
+
+A final ordinary service restart also succeeded. Installed status now reports zero projects and no pending recovery entries; doctor is healthy. The enabled socket, fixed runtime, preserved test store, installer backup, and development worktrees remain available. The deliberate crash/restart remains in the journal as expected historical test evidence. Parent/child task lifecycle and isolated workspaces are the next product milestone; they were not implemented by this acceptance/integration work.

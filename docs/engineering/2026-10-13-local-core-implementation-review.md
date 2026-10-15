@@ -1,5 +1,7 @@
 # Local core implementation review, 2026-10-13
 
+**Follow-up:** Independent review, remediation, live installation, and local integration completed on 2026-10-15. See [the acceptance record](2026-10-14-local-core-independent-review-and-acceptance.md). The statements below describe the original 2026-10-13 author review.
+
 Implemented on `codex/local-core-design`, starting from `3e1ddc5`. The eight approved plan tasks are complete in the development branch. No merge, push, release, real-home install, or live user-manager activation was performed.
 
 ## Result and evidence
