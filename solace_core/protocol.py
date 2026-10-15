@@ -27,6 +27,10 @@ TASK_PARAMS = {
     'task.create': ({'project','title'},{'parent','expected_parent_revision','prompt','prompt_policy','prompt_days','exclusions'}),
     'task.list': ({'project'},{'parent'}), 'task.show': ({'project','task'},set()),
     'task.start': ({'project','task','expected_revision'},{'from_checkpoint','expected_parent_revision'}),
+    'task.block': ({'project','task','expected_revision','reason'},set()),
+    'task.resume': ({'project','task','expected_revision'},set()),
+    'task.cancel': ({'project','task','expected_revision'},set()),
+    'workspace.relink': ({'project','task','expected_revision','path','confirmed_path','checkpoint','writers_paused'},set()),
     'task.ready': ({'project','task','expected_revision'},set()),
     'task.prompt.show': ({'project','task'},set()),
     'task.prompt.delete': ({'project','task','expected_revision'},set()),
@@ -97,7 +101,7 @@ def validate_request(value):
     if not required <= params.keys() or params.keys() - required - optional:
         raise invalid('Missing or extra method parameters.')
     for key, item in params.items():
-        if key in ('preview','refresh','all_workspaces'):
+        if key in ('preview','refresh','all_workspaces','writers_paused'):
             if type(item) is not bool: raise invalid('Expected a boolean parameter.')
         elif key in ('expected_revision','expected_parent_revision','days','prompt_days'):
             if type(item) is not int or item<1: raise invalid('Expected a positive integer parameter.')
@@ -113,7 +117,7 @@ def validate_request(value):
                 raise invalid('Exclusions must be strings.')
         elif not isinstance(item, str) or '\0' in item or (key not in ('message','confirmed_root') and not item):
             raise invalid('Parameter must be a nonempty string.')
-    for key in ('root','store','destination'):
+    for key in ('root','store','destination','path','confirmed_path'):
         if key in params and not Path(params[key]).is_absolute():
             raise invalid('API filesystem paths must be absolute.')
     return value

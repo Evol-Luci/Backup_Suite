@@ -91,6 +91,47 @@ class CoreService:
             self._recover_pending(project, catalog)
             return catalog, False
 
+    def _rebase_recovery(self,catalog,previous):
+        from .schema import schema_version
+        from .workspace_paths import directory_identity
+        import json
+        if schema_version(catalog)!=2: return
+        from .workspace_trees import _verify_tree,_targets,_manifest_digest
+        from solace_engine.repository import ProjectRepository
+        caches=[]
+        with catalog.connect() as db:
+            rows=[dict(row) for row in db.execute('SELECT * FROM workspace_caches')]
+        repo=ProjectRepository.open_existing(catalog.store.parent,catalog.store)
+        for row in rows:
+            old=Path(row['path'])
+            try: relative=old.relative_to(Path(previous['store']))
+            except ValueError:
+                raise CoreError('CACHE_CORRUPT','A cache path is outside its recorded store.','Preserve it for inspection.')
+            if relative.parts!=('workspace-cache',row['checkpoint_id'],row['cache_id'],'tree'):
+                raise CoreError('CACHE_CORRUPT','A cache path has an unexpected layout.','Preserve it for inspection.')
+            path=catalog.store/relative
+            if path.is_symlink(): raise CoreError('CACHE_CORRUPT','A cache path became a symlink.','Preserve it for inspection.')
+            _verify_tree(repo,row['checkpoint_id'],path,sealed=True)
+            entries=repo.get_file_entries(row['checkpoint_id'])
+            if _manifest_digest(entries,_targets(repo,entries))!=row['manifest_sha256']:
+                raise CoreError('CACHE_CORRUPT','Cache manifest metadata changed.','Preserve it for inspection.')
+            caches.append((str(path),json.dumps(directory_identity(path,catalog.policy)),row['checkpoint_id']))
+        with catalog.connect(write=True) as db:
+            for path,identity,checkpoint in caches:
+                db.execute('UPDATE workspace_caches SET path=?,identity_json=? WHERE checkpoint_id=?',(path,identity,checkpoint))
+            for row in db.execute("SELECT operation_id,recovery_operation_id,expected_json FROM workspace_intents WHERE phase NOT IN ('committed','abandoned')").fetchall():
+                context=json.loads(row['expected_json'])
+                context['store_identity']=directory_identity(catalog.store,catalog.policy)
+                capture=context.get('capture_identity')
+                if capture and not context.get('parent') and capture['path']==previous['root']:
+                    context['capture_identity']=directory_identity(Path(catalog.registration['root']),catalog.policy)
+                db.execute('UPDATE workspace_intents SET expected_json=? WHERE operation_id=?',(json.dumps(context),row['operation_id']))
+                for operation in (row['operation_id'],row['recovery_operation_id']):
+                    if operation:
+                        old=db.execute('SELECT params_json FROM operations WHERE id=?',(operation,)).fetchone()
+                        params=json.loads(old[0]);params.update(context)
+                        db.execute('UPDATE operations SET params_json=? WHERE id=?',(json.dumps(params),operation))
+
     def handle(self, request):
         request_id = request.get('id') if isinstance(request, dict) else None
         try:
@@ -116,6 +157,14 @@ class CoreService:
         coordinator = self.coordinator(project)
         if method in ('project.relink', 'project.unregister'):
             with coordinator.lock:
+                from .protocol import fingerprint
+                receipt_params=dict(project=project)
+                if method=='project.relink':
+                    receipt_params.update(root=str(Path(p['root']).resolve()),store=str(Path(p['store']).resolve()),confirmed_root=p['confirmed_root'])
+                with self.registry.connect() as db:
+                    receipt=self.registry._receipt(db,reqid,fingerprint(method,receipt_params,actor))
+                if receipt is not None: return receipt
+                previous_registration=self.registry.get(project)
                 try:
                     current = self.catalog(project)
                 except Exception as error:
@@ -131,12 +180,26 @@ class CoreService:
                 if current is not None and current.has_pending():
                     raise CoreError('PROJECT_BUSY', 'This project has queued or running operations.', 'Wait for its operations to finish before changing registration.', True)
                 if method == 'project.relink':
+                    if current is not None:
+                        from .schema import schema_version
+                        if schema_version(current)==2:
+                            with current.connect() as db:
+                                if db.execute('SELECT 1 FROM task_claims LIMIT 1').fetchone():
+                                    raise CoreError('TASK_BUSY','Workspace recovery still owns this project.','Resolve or abandon it before relocating available storage.')
                     result = self.registry.relink(project, Path(p['root']), Path(p['store']), p['confirmed_root'], reqid, actor)
                     try:
+                        recovered=self.catalog(project)
+                        self._rebase_recovery(recovered,previous_registration)  # Explicit validated location change.
                         self.catalog(project)  # Reconcile a previously unavailable store at its validated new path.
                     except Exception as error:
                         self.recovery.append(dict(project=project, error=classify(error).as_dict()))
                     return result
+                if current is None:
+                    raise CoreError('STORE_UNAVAILABLE','Task ownership cannot be checked while the catalog is unavailable.','Reconnect or explicitly relink the store before unregistering.')
+                from .schema import schema_version
+                if schema_version(current)==2:
+                    from .tasks import TaskCatalog
+                    with current.connect() as db: TaskCatalog(current).assert_project_unregisterable(db)
                 result = self.registry.unregister(project, reqid, actor)
                 old = self._catalogs.pop(project, None)
                 if old: old.notify()
@@ -166,6 +229,7 @@ class CoreService:
                 if not registered: raise CoreError('PROJECT_NOT_FOUND','The project is no longer registered.','Retained records are read-only.')
                 if method=='workspace.recovery.abandon': return TaskOperations(self,catalog).abandon(request)
                 if method=='workspace.staging.cleanup': return TaskOperations(self,catalog).cleanup_staging(request)
+                if method in ('task.block','task.resume','task.cancel'): return tasks.transition(request)
                 if method=='task.create': return tasks.create(request)
                 if method=='task.prompt.delete': return prompts.delete(request)
                 if method=='project.prompt-policy.set': return prompts.set_policy(request)

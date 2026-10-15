@@ -162,3 +162,34 @@ class TaskCatalog:
                 ids=[r[0] for r in db.execute('SELECT id FROM tasks WHERE parent_id=? ORDER BY created_at,rowid',(parent,))]
             else: ids=[r[0] for r in db.execute('SELECT id FROM tasks ORDER BY created_at,rowid')]
         return [self.show(task) for task in ids]
+
+    def transition(self,request):
+        require_tasks(self.catalog)
+        p=request['params'];task=p['task'];method=request['method']
+        with self.catalog.connect(write=True) as db:
+            cached=self.lookup_request(request,db)
+            if cached is not None: return cached
+            row=self.assert_revision(db,task,p.get('expected_revision'));self.assert_unclaimed(db,task)
+            allowed={'task.block':('active',),'task.resume':('blocked','ready'),
+                     'task.cancel':('created','active','blocked','ready')}
+            if row['state'] not in allowed.get(method,()):
+                raise CoreError('TASK_STATE_INVALID','This transition is not allowed in the current state.','Inspect the task and choose an explicit valid transition.')
+            if method=='task.cancel' and db.execute("SELECT 1 FROM tasks WHERE parent_id=? AND state<>'cancelled' LIMIT 1",(task,)).fetchone():
+                raise CoreError('TASK_CHILDREN_PENDING','Children must be cancelled explicitly first.','Inspect and cancel each remaining child before cancelling its parent.')
+            reason=p.get('reason') if method=='task.block' else None
+            if method=='task.block' and (not isinstance(reason,str) or not reason or len(reason)>1024 or '\0' in reason):
+                raise invalid('Block reason must contain 1–1024 characters without NUL.')
+            state={'task.block':'blocked','task.resume':'active','task.cancel':'cancelled'}[method]
+            revision=row['revision']+1;now=self.now().isoformat()
+            db.execute('UPDATE tasks SET state=?,revision=?,block_reason=?,updated_at=? WHERE id=?',(state,revision,reason,now,task))
+            result=dict(task_id=task,state=state,revision=revision)
+            self.event(db,request,'task.'+state,state,dict(task_id=task,revision=revision))
+            self.save_request(db,request,result)
+        self.catalog.notify();return result
+
+    def assert_project_unregisterable(self,db):
+        if (db.execute("SELECT 1 FROM tasks WHERE state<>'cancelled' LIMIT 1").fetchone()
+            or db.execute('SELECT 1 FROM task_claims LIMIT 1').fetchone()
+            or db.execute("SELECT 1 FROM workspace_intents WHERE phase NOT IN ('committed','abandoned') LIMIT 1").fetchone()):
+            raise CoreError('PROJECT_BUSY','This project retains noncancelled tasks or unresolved workspace operations.',
+                            'Finish recovery and explicitly cancel all tasks before unregistering.')

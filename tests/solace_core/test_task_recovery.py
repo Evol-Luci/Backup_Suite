@@ -136,3 +136,14 @@ class RecoveryTests(TaskCase):
         with patch.object(Path,'exists',exists),readonly_database(catalog.database) as db:
             self.assertEqual(db.execute('SELECT schema_version FROM core_metadata').fetchone()[0],2)
         self.assertEqual(before,{p.name:p.read_bytes() for p in catalog.store.iterdir() if p.is_file()})
+
+    def test_explicit_store_relink_preserves_recovery_and_relocates_verified_base_cache(self):
+        (self.root/'file').write_text('baseline');parent=self.create_task();request=self.crash(parent,'after_stage')
+        original=Path(self.registry.get(self.project)['store']);moved=original.with_name('relocated-store');original.rename(moved)
+        self.reopen()
+        self.call('project.relink',project=self.project,root=str(self.root),store=str(moved),confirmed_root=str(self.root))
+        operation=self.operation(request)
+        result=self.wait_operation(self.recover(operation,parent)['operation_id']);self.assertEqual(result['state'],'succeeded',result)
+        baseline=self.show(parent)['workspace']['base_checkpoint'];child=self.create_task(parent=parent)
+        started=self.start(child,from_checkpoint=baseline)
+        self.assertEqual((Path(started['path'])/'file').read_text(),'baseline')

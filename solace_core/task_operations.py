@@ -81,6 +81,18 @@ class TaskOperations:
                     self.eligible(db,task,p['from_checkpoint'],parent)
                     selected=p['from_checkpoint']
                 context['explicit_base']=selected is not None
+            elif method=='workspace.relink':
+                if task['state'] not in ('blocked','ready'): self.invalid_state()
+                workspace=rowdict(db,'SELECT * FROM workspaces WHERE task_id=?',(task_id,))
+                if workspace is None: raise CoreError('WORKSPACE_UNAVAILABLE','There is no workspace to relink.','Start the task first.')
+                candidate=Path(p['path'])
+                canonical=str(candidate.resolve())
+                if p['writers_paused'] is not True or p['confirmed_path']!=canonical:
+                    raise CoreError('CONFIRMATION_REQUIRED','Confirm the exact candidate path and that writers are paused.','Pause external writers and confirm the canonical path.')
+                reference=db.execute('SELECT 1 FROM task_checkpoint_refs WHERE task_id=? AND checkpoint_id=?',(task_id,p['checkpoint'])).fetchone()
+                if reference is None: raise CoreError('BASELINE_INELIGIBLE','The comparison checkpoint is not in this task history.','Select one of this task’s saved checkpoints.')
+                context.update(workspace=workspace,candidate_identity=self.paths.validate(candidate),
+                               relink_checkpoint=p['checkpoint'],writers_paused=True)
             else:
                 if method in ('task.ready','workspace.checkpoint') and task['state'] not in ('active','blocked'): self.invalid_state()
                 workspace=self.workspace(db,task_id)
@@ -96,6 +108,9 @@ class TaskOperations:
                 db.execute('UPDATE operations SET params_json=? WHERE id=?',(json.dumps(context),operation))
                 db.execute('INSERT INTO workspace_intents(operation_id,task_id,workspace_id,kind,phase,staging_path,final_path,base_checkpoint,expected_json) VALUES (?,?,?,\'start\',\'reserved\',?,?,?,?)',
                     (operation,task_id,uuid.uuid4().hex,selected_paths['staging_path'],selected_paths['final_path'],selected,json.dumps(context)))
+            elif method=='workspace.relink':
+                db.execute("INSERT INTO workspace_intents(operation_id,task_id,workspace_id,kind,phase,final_path,final_identity_json,base_checkpoint,expected_json) VALUES (?,?,?,'relink','reserved',?,?,?,?)",
+                    (operation,task_id,workspace['id'],context['candidate_identity']['path'],json.dumps(context['candidate_identity']),p['checkpoint'],json.dumps(context)))
             self.catalog._event(db,dict(id=operation,actor=request['actor']),'operation.queued','queued',dict(task_id=task_id))
         self.catalog.notify()
         self.coordinator.submit(operation,lambda:self.run(operation,request))
@@ -138,6 +153,9 @@ class TaskOperations:
             self.catalog.transition(operation,'running')
             method=request['method']
             if method=='workspace.recovery.resume': self.resume_publication(operation)
+            elif method=='workspace.relink':
+                with self.catalog.connect() as db: intent=self.recovery_intent(db,operation)
+                self.finish_relink(operation,intent)
             elif method=='task.start': self.start(operation)
             elif method=='workspace.status': self.refresh(operation)
             else: self.capture(operation,request)
@@ -237,7 +255,7 @@ class TaskOperations:
         if ready: self.ref(db,context['task'],checkpoint.id,'result',now)
         db.execute('UPDATE workspaces SET head_checkpoint=? WHERE id=?',(checkpoint.id,workspace['id']))
         state='ready' if ready else context['state'];revision=context['expected_revision']+1
-        db.execute('UPDATE tasks SET state=?,revision=?,updated_at=? WHERE id=?',(state,revision,now,context['task']))
+        db.execute('UPDATE tasks SET state=?,revision=?,updated_at=?,block_reason=? WHERE id=?',(state,revision,now,None if ready else self.tasks.row(db,context['task'])['block_reason'],context['task']))
         self.catalog._transition(db,operation_id,'succeeded',result=dict(checkpoint_id=checkpoint.id,task_id=context['task'],workspace_id=workspace['id'],
             revision=revision,file_count=checkpoint.file_count,logical_bytes=checkpoint.logical_bytes),kind='task.ready' if ready else 'workspace.checkpointed')
         self.tasks.release(db,operation_id)
@@ -378,6 +396,27 @@ class TaskOperations:
             self.tasks.event(db,request,'workspace.staging.cleaned','succeeded',dict(operation_id=intent['operation_id']))
             self.tasks.save_request(db,request,result)
         self.catalog.notify();return result
+
+    def finish_relink(self,operation,intent):
+        from .workspace_trees import validate_workspace_links
+        context=json.loads(intent['expected_json']);identity=context['candidate_identity']
+        self.paths.validate(Path(identity['path']),expected=identity)
+        repo=ProjectRepository.open_existing(Path(identity['path']),self.catalog.store)
+        # Validate candidate symlink text without checkpointing or following it.
+        entries,warnings=repo.inspect_tree(context['profile']['exclusions'],excluded=protected_excluder(repo.project_root,context['profile'],[self.catalog.store]))
+        targets={e.path:os.readlink(repo.project_root/e.path).encode('utf-8','surrogateescape') for e in entries if e.kind=='symlink'}
+        validate_workspace_links(entries,targets)
+        comparison=compare_tree(repo,context['relink_checkpoint'],repo.project_root,context['profile'])
+        with self.coordinator.lock,self.catalog.connect(write=True) as db:
+            self.check(db,operation,context);self.paths.validate(repo.project_root,expected=identity)
+            revision=context['expected_revision']+1
+            db.execute('UPDATE workspaces SET path=?,mount_id=?,device=?,inode=?,observed_at=?,observed_json=? WHERE id=?',
+                (identity['path'],identity['mount_id'],identity['device'],identity['inode'],comparison['observed_at'],json.dumps(comparison),intent['workspace_id']))
+            db.execute('UPDATE tasks SET revision=?,updated_at=? WHERE id=?',(revision,self.catalog._now(),context['task']))
+            db.execute("UPDATE workspace_intents SET phase='committed' WHERE operation_id=?",(intent['operation_id'],))
+            self.catalog._transition(db,operation,'succeeded',result=dict(task_id=context['task'],workspace_id=intent['workspace_id'],path=identity['path'],revision=revision,comparison=comparison),kind='workspace.relinked')
+            self.tasks.release(db,operation)
+        self.catalog.notify()
 
 
 def staging_entries(directory_fd,prefix=''):

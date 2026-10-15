@@ -129,11 +129,12 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertTrue(result['ok'],result)
         self.assertEqual(self.call('operation.show',project=self.project,operation=operation)['state'],'interrupted')
 
-    def test_unavailable_store_can_be_unregistered_without_worker(self):
+    def test_unavailable_store_unregister_refused_when_task_ownership_is_unknown(self):
         original=Path(self.registry.get(self.project)['store'])
         self.service.close();moved=self.base/'moved-store';original.rename(moved)
         self.service=CoreService(self.registry);self.addCleanup(self.service.close)
         result=self.service.handle(self.request('project.unregister',project=self.project))
-        self.assertTrue(result['ok'],result)
+        self.assertFalse(result['ok'],result)
+        self.assertEqual(result['error']['code'],'STORE_UNAVAILABLE')
         self.assertTrue(moved.exists())
-        self.assertEqual(self.registry.list(),[])
+        self.assertEqual(len(self.registry.list()),1)
