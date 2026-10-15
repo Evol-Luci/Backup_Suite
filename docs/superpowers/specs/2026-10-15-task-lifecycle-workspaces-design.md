@@ -81,9 +81,11 @@ The current engine selects the latest project checkpoint as parent. That cannot 
 
 Maintain separate source and workspace heads. Manual project checkpoints advance the source head; task captures advance only the relevant workspace head. Task checkpoint context records purpose, owner task/workspace, baseline, and effective exclusions. Default checkpoint listing remains understandable by showing source checkpoints; an explicit all-workspaces view exposes the rest with their owners.
 
-For a parent start, capture the registered source as its task baseline, with an explicit source-history parent and the task capture profile. For a default child start, capture the parent workspace from its explicit head, advance that parent's head, and use that exact new checkpoint as the child's baseline. Ready/manual task capture uses the task's own previous head as parent. No task operation queries a global newest checkpoint to choose ancestry.
+For a parent start, capture the registered source as its task baseline, with an explicit source-history parent and the task capture profile. This filtered task baseline does not advance the manual source head. For a default child start, capture the parent workspace from its explicit head, advance that parent's head, and use that exact new checkpoint as the child's baseline. Ready/manual task capture uses the task's own previous head as parent. No task operation queries a global newest checkpoint to choose ancestry.
 
 Task capture has visible protected exclusions for Git control metadata (`.git` at every depth), legacy `.solace_vault` data, and Solace-owned store/cache/workspace roots. These rules prevent copied Git/submodule/worktree pointers from referring back to the original repository. Existing manual source checkpoint behavior remains available; task-profile checkpoints explicitly disclose their exclusions. Ordinary hidden source files remain included. Later integration compares the same task profile and must preserve protected metadata in the destination.
+
+Project checkpoint usage must select the recorded source head instead of treating the latest task capture as the source state. Task/workspace inspection reports its own recorded head.
 
 User exclusions are copied into the task's effective profile at creation, inherited by its children, and shown by task inspection. Profile changes require a new task; a task's baseline and results cannot silently use different exclusion rules. A future project exclusion configuration can supply defaults; this milestone accepts explicit rules at task creation.
 
@@ -93,7 +95,7 @@ The existing checkpoint engine records files and symlinks, rather than empty dir
 
 Default workspace root: `$XDG_DATA_HOME/solace/workspaces/<project-id>/<task-id>`. Configure an alternative absolute local root in `core-config.json`. Workspace roots must pass local-filesystem/sync-root validation and sit outside registered source roots, project stores, and Git-controlled ancestor trees. A nested project store remains supported, but it is never used as the workspace root. Invalid placement produces a clear error naming the required relocation.
 
-Each workspace has a stable ID and cataloged canonical path, mount identity, physical directory identity, base checkpoint, head checkpoint, and availability state. Identity metadata stays in the store/database, not in source files. A missing/remounted/replaced workspace is unavailable; it is never silently recreated at the same path. Explicit workspace relink confirms the new path and verifies content against a selected existing checkpoint, reporting dirty files instead of claiming source identity can be proved automatically.
+Each workspace has a stable ID and cataloged canonical path, mount identity, physical directory identity, base checkpoint, head checkpoint, and availability state. Identity metadata stays in the store/database, not in source files. A missing/remounted/replaced workspace is unavailable; it is never silently recreated at the same path. Workspace relink requires the task to be blocked or ready and no core operation to own it; the caller explicitly acknowledges that external writers have been paused. Explicit workspace relink confirms the new path and verifies content against a selected existing checkpoint, reporting dirty files instead of claiming source identity can be proved automatically.
 
 Create mutable regular files with reflink copies when supported and verified ordinary copies otherwise. Never use hardlinks. Source/task files and siblings cannot share mutable inodes. Source and destination placement is revalidated before workspace publication. External agents can still write elsewhere under their user account; this is filesystem workflow isolation, not a process sandbox.
 
@@ -104,6 +106,8 @@ The content-addressed object store is not a reflinkable complete-file tree for c
 Workspace path selection cannot overwrite existing destinations. Publication uses an operation-owned staging path and no-replace rename; all file/mode/symlink checks precede publication. Task cancellation or unregister never removes workspace files. Workspace deletion and cache garbage collection are explicitly deferred.
 
 Workspace status scans and compares against its recorded head, including content, modes, additions, removals, and link targets. It reports differences without creating a checkpoint or changing task state. File notifications and a live GUI are deferred; `--refresh` performs a requested scan, while ordinary show returns dated last-observed status. No event is persisted for each filesystem change.
+
+Storage reporting separates retained object bytes from materialized cache/workspace logical bytes. Do not sum reflinked file sizes or allocated blocks and present that as unique physical usage. If unique/shared extent accounting is unavailable, report that limitation explicitly. All checkpoint/workspace/cache references remain retained; do not advertise speculative reclaimable bytes as safe to delete before the GC milestone.
 
 ## 7. Durable publication and recovery
 
