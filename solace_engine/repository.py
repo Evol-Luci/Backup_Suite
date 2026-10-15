@@ -22,6 +22,7 @@ from .object_store import ObjectStore
 
 
 _SCHEMA_VERSION = 1
+LATEST_PARENT = object()
 
 
 class ProjectRepository:
@@ -143,7 +144,7 @@ class ProjectRepository:
         return any(fnmatch.fnmatchcase(relative, pattern) or
                    fnmatch.fnmatchcase(path.name, pattern) for pattern in exclusions)
 
-    def _scan(self, exclusions: Sequence[str]) -> tuple[list[FileEntry], list[str]]:
+    def _scan(self, exclusions: Sequence[str], *, excluded=None) -> tuple[list[FileEntry], list[str]]:
         entries: list[FileEntry] = []
         warnings: list[str] = []
 
@@ -164,6 +165,8 @@ class ProjectRepository:
                 if self._excluded(path, relative, exclusions):
                     continue
                 metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if excluded is not None and excluded(relative, metadata):
+                    continue
                 if stat.S_ISDIR(metadata.st_mode) and os.path.samestat(metadata, self._store_identity):
                     continue
                 if stat.S_ISLNK(metadata.st_mode):
@@ -241,21 +244,32 @@ class ProjectRepository:
             )
 
     def create_checkpoint(self, message: str, exclusions: Sequence[str] = (), *,
-                          publication_hook=None) -> Checkpoint:
-        entries, warnings = self._scan(exclusions)
+                          parent_id=LATEST_PARENT, excluded=None, publication_hook=None) -> Checkpoint:
+        if parent_id is not LATEST_PARENT and parent_id is not None:
+            with self._connect() as connection:
+                if connection.execute('SELECT 1 FROM checkpoints WHERE id=?', (parent_id,)).fetchone() is None:
+                    raise CheckpointNotFound('explicit parent checkpoint does not exist')
+        entries, warnings = self._scan(exclusions) if excluded is None else self._scan(exclusions, excluded=excluded)
         for entry in entries:
             for digest in entry.chunk_digests:
                 self.object_store.read_object(digest)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            parent = connection.execute(
-                "SELECT id FROM checkpoints ORDER BY created_at DESC, rowid DESC LIMIT 1"
-            ).fetchone()
+            if parent_id is LATEST_PARENT:
+                parent = connection.execute(
+                    "SELECT id FROM checkpoints ORDER BY created_at DESC, rowid DESC LIMIT 1"
+                ).fetchone()
+                selected_parent = parent[0] if parent else None
+            else:
+                selected_parent = parent_id
+                if parent_id is not None and connection.execute(
+                        'SELECT 1 FROM checkpoints WHERE id=?', (parent_id,)).fetchone() is None:
+                    raise CheckpointNotFound('explicit parent checkpoint does not exist')
             checkpoint = Checkpoint(
                 id=uuid.uuid4().hex,
                 message=message,
                 created_at=datetime.now(timezone.utc).isoformat(),
-                parent_id=parent[0] if parent else None,
+                parent_id=selected_parent,
                 file_count=len(entries),
                 logical_bytes=sum(entry.size for entry in entries),
                 warnings=tuple(warnings),

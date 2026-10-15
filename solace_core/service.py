@@ -176,8 +176,16 @@ class CoreService:
                 raise CoreError('PROJECT_BUSY', 'This project is processing an operation.', 'Inspect its operation or retry after completion.', True)
             repo = catalog.open_existing()
             if method == 'checkpoint.list':
+                from .schema import schema_version
+                if schema_version(catalog)==2:
+                    from .lineage import Lineage
+                    return {'checkpoints': Lineage(catalog).published(p.get('all_workspaces',False))}
                 return {'checkpoints': [asdict(cp) for cp in repo.list_checkpoints()]}
             if method == 'checkpoint.usage':
+                from .schema import schema_version
+                if schema_version(catalog)==2:
+                    from .lineage import Lineage
+                    return Lineage(catalog).source_usage()
                 return asdict(repo.storage_usage())
         raise CoreError('INVALID_REQUEST', 'Unsupported method.', 'Use a documented core method.')
 
@@ -187,8 +195,17 @@ class CoreService:
             repo = catalog.open_existing()
             p, method = request['params'], request['method']
             if method == 'checkpoint.create':
-                repo.create_checkpoint(p['message'], p.get('exclusions', ()),
-                                       publication_hook=lambda db, cp: catalog.complete_checkpoint(db, operation_id, cp))
+                from .schema import schema_version
+                if schema_version(catalog)==2:
+                    from .lineage import Lineage
+                    lineage=Lineage(catalog)
+                    def publish(db,cp):
+                        lineage.publish_source(db,cp,p.get('exclusions',[]))
+                        catalog.complete_checkpoint(db,operation_id,cp)
+                    repo.create_checkpoint(p['message'],p.get('exclusions',()),parent_id=lineage.source_head(),publication_hook=publish)
+                else:
+                    repo.create_checkpoint(p['message'],p.get('exclusions',()),
+                                           publication_hook=lambda db,cp: catalog.complete_checkpoint(db,operation_id,cp))
                 catalog.notify()
             elif method == 'checkpoint.verify':
                 report = asdict(repo.verify_checkpoint(p['checkpoint']))

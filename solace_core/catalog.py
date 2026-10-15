@@ -64,7 +64,9 @@ class ProjectCatalog:
                     operation_id TEXT, actor TEXT NOT NULL, created_at TEXT NOT NULL, kind TEXT NOT NULL,
                     state TEXT NOT NULL, details_json TEXT NOT NULL);
             ''')
-            db.execute('INSERT INTO core_metadata VALUES (1,1,?,?)', (registration['id'], registration['store_uuid']))
+            from .schema import create_schema_v2
+            create_schema_v2(db)
+            db.execute('INSERT INTO core_metadata VALUES (1,2,?,?)', (registration['id'], registration['store_uuid']))
         catalog.database.chmod(0o600)
         ObjectStore._sync_directories((catalog.store / 'objects', catalog.store, catalog.store.parent))
         return catalog
@@ -86,7 +88,7 @@ class ProjectCatalog:
                 if db.execute('PRAGMA user_version').fetchone()[0] != 1:
                     raise CoreError('SCHEMA_VERSION_UNSUPPORTED', 'Unsupported checkpoint schema.', 'Use a compatible Solace version; preserve this store.')
                 row = db.execute('SELECT schema_version, project_id, store_uuid FROM core_metadata WHERE singleton=1').fetchone()
-                if row is None or row[0] != 1:
+                if row is None or row[0] not in (1, 2):
                     raise CoreError('SCHEMA_VERSION_UNSUPPORTED', 'Unsupported core schema.', 'Use a compatible Solace version; preserve this store.')
                 if row[1:] != (r['id'], r['store_uuid']):
                     raise CoreError('STORE_IDENTITY_MISMATCH', 'This store belongs to a different project.', 'Select the original store; no data has been replaced.')

@@ -155,11 +155,11 @@ policy=StoragePolicy(mountinfo='1 0 0:1 / / rw - ext4 x rw\\n',sync_roots=[])
 s=CoreService(Registry(sys.argv[1],policy))
 original=ProjectRepository.create_checkpoint
 phase=sys.argv[3]
-def capture(repo,message,exclusions=(),*,publication_hook=None):
+def capture(repo,message,exclusions=(),*,publication_hook=None,**kwargs):
     def hook(db,cp):
         publication_hook(db,cp)
         if phase=='before': os._exit(61)
-    result=original(repo,message,exclusions,publication_hook=hook)
+    result=original(repo,message,exclusions,publication_hook=hook,**kwargs)
     os._exit(62)
 ProjectRepository.create_checkpoint=capture
 s.handle(dict(version=1,id=sys.argv[4],method='checkpoint.create',params={'project':sys.argv[2],'message':'crash'},actor='test'))
