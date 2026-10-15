@@ -144,6 +144,9 @@ class ProjectCatalog:
     def find_operation(self, request):
         signature = fingerprint(request['method'], request['params'], request['actor'])
         with self.connect() as db:
+            if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] == 2:
+                from .tasks import TaskCatalog
+                return TaskCatalog(self).lookup_request(request,db)
             row = db.execute('SELECT id,fingerprint FROM operations WHERE request_id=?', (request['id'],)).fetchone()
         if row:
             if row['fingerprint'] != signature:
@@ -154,6 +157,11 @@ class ProjectCatalog:
     def accept_operation(self, request):
         signature = fingerprint(request['method'], request['params'], request['actor'])
         with self.connect(write=True) as db:
+            if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] == 2:
+                from .tasks import TaskCatalog
+                cached=TaskCatalog(self).lookup_request(request,db)
+                if cached is not None:
+                    return cached
             row = db.execute('SELECT id,fingerprint FROM operations WHERE request_id=?', (request['id'],)).fetchone()
             if row:
                 if row['fingerprint'] != signature:
