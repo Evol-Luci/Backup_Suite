@@ -150,7 +150,10 @@ class CoreService:
     def _dispatch(self, request):
         method, p, actor, reqid = request['method'], request['params'], request['actor'], request['id']
         if method == 'core.status':
-            return dict(pid=os.getpid(), protocol_version=1, projects=self.registry.list(), recovery=self.recovery)
+            return dict(pid=os.getpid(), protocol_version=1, projects=self.registry.list(), recovery=self.recovery,
+                        capabilities=['tasks.v1','workspaces.v1','project-upgrade.v1','prompt-retention.v1'],
+                        core_schema_supported=[1,2],core_schema_created=2,
+                        prompt_maintenance=dict(self.maintenance.failures) if self.maintenance else {})
         if method == 'doctor':
             from .diagnostics import inspect_registry
             return inspect_registry(self.registry, p.get('project'))

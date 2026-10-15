@@ -10,7 +10,7 @@ def inspect(registration, policy=None):
     result = dict(project=registration['id'], root=registration['root'], store=registration['store'], ok=False)
     try:
         catalog = ProjectCatalog(registration, policy)
-        catalog.validate()
+        catalog.validate(require_root=False)
         for path in (catalog.store, catalog.database):
             mode = path.stat().st_mode
             if path.stat().st_uid != os.getuid() or mode & 0o077:
@@ -19,9 +19,28 @@ def inspect(registration, policy=None):
             checks = [row[0] for row in db.execute('PRAGMA integrity_check')]
             if checks != ['ok']:
                 raise CoreError('DATABASE_CORRUPT', 'Database integrity checks failed.', 'Preserve the store for explicit recovery.')
+            version=db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0]
+            result.update(core_schema=version,engine_schema=db.execute('PRAGMA user_version').fetchone()[0],
+                          task_upgrade_required=(version==1),database_rollback='Runtime rollback does not downgrade project databases or erase task/workspace references.')
+            if version==2:
+                result['tasks']={state:0 for state in ('created','active','blocked','ready','cancelled')}
+                result['tasks'].update({row[0]:row[1] for row in db.execute('SELECT state,COUNT(*) FROM tasks GROUP BY state')})
+                result['workspaces']=[]
+                from .workspace_paths import directory_identity
+                for row in db.execute('SELECT id,task_id,path,mount_id,device,inode FROM workspaces'):
+                    identity=dict(zip(('id','task_id','path','mount_id','device','inode'),row))
+                    try:
+                        actual=directory_identity(Path(identity['path']),catalog.policy)
+                        available=all(actual[key]==identity[key] for key in ('path','mount_id','device','inode'))
+                    except (OSError,CoreError):available=False
+                    result['workspaces'].append(dict(id=identity['id'],task_id=identity['task_id'],available=available))
             pending = [dict(id=row[0],kind=row[1],state=row[2]) for row in db.execute("SELECT id,kind,state FROM operations WHERE state IN ('queued','running','interrupted')")]
         result.update(ok=True, operations=pending)
+        root=Path(registration['root'])
+        if root.is_symlink() or not root.is_dir():
+            raise CoreError('PROJECT_UNAVAILABLE','The source directory is unavailable.','Explicitly relink the source root.')
     except Exception as error:
+        result['ok']=False
         result['error'] = classify(error).as_dict()
     return result
 

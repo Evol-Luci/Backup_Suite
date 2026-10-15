@@ -131,7 +131,11 @@ class Registry:
     def _available(self, record):
         result = dict(record)
         try:
-            ProjectCatalog(record, self.policy).validate()
+            catalog=ProjectCatalog(record,self.policy)
+            from .schema import schema_version
+            version=schema_version(catalog)
+            result.update(core_schema=version,task_upgrade_required=(version==1))
+            catalog.validate()
             result['available'] = True
         except Exception as error:
             result.update(available=False, error=classify(error).as_dict())

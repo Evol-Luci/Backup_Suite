@@ -38,7 +38,10 @@ class Lineage:
             logical=db.execute('SELECT COALESCE(SUM(size),0) FROM file_entries WHERE checkpoint_id=?',(head,)).fetchone()[0]
             cache=db.execute('SELECT COALESCE(SUM(logical_bytes),0) FROM workspace_caches').fetchone()[0]
             refs=db.execute('SELECT COUNT(*) FROM task_checkpoint_refs').fetchone()[0]
+            observations=[json.loads(row[0]) if row[0] else None for row in db.execute('SELECT observed_json FROM workspaces')]
+            workspace_bytes=sum(row['logical_bytes'] for row in observations) if all(row is not None for row in observations) else None
         physical=repo.storage_usage().physical_bytes
         return dict(source_head=head,logical_bytes=logical,physical_bytes=physical,object_bytes=physical,
-                    reclaimable_bytes=None,cache_logical_bytes=cache,retained_task_references=refs,
+                    reclaimable_bytes=None,cache_logical_bytes=cache,workspace_logical_bytes=workspace_bytes,
+                    workspace_measurement='last observed; may be stale',retained_task_references=refs,
                     unique_physical_bytes=None,shared_extent_accounting='unavailable')

@@ -20,6 +20,9 @@ def validate_policy(policy,days):
         (policy=='days' and (type(days) is not int or days<=0 )) or
         (policy!='days' and days is not None)):
         raise invalid('Use retain, none, or days with a positive integer day count.')
+    if policy=='days':
+        try: utcnow()+timedelta(days=days)
+        except (OverflowError,ValueError): raise invalid('Retention days must fit the supported UTC date range through year 9999.')
 
 
 class PromptStore:

@@ -2,6 +2,10 @@
 
 The local core coordinates registrations and checkpoint operations for one Linux user. It uses a private Unix socket, a SQLite user registry, and separate identity-checked project stores. It opens no network port and does not launch agents. Legacy vault commands and scheduled backup jobs retain their existing behavior.
 
+## Task/workspace candidate
+
+The reviewed initial core is installed. The next candidate adds revisioned tasks, isolated workspaces, ready results and logical prompt retention; see [task and workspace guidance](task-workspaces.md). Existing stores need explicit core-schema upgrade to use tasks. Runtime rollback preserves databases and cannot downgrade schema 2. This candidate requires independent review and separate installation approval.
+
 ## Install preview
 
 Run from this checkout:

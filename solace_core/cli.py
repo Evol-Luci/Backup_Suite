@@ -15,7 +15,7 @@ class Parser(argparse.ArgumentParser):
 
 
 def exit_code(code):
-    if code in ('INVALID_REQUEST','CONFIRMATION_REQUIRED','CURSOR_INVALID'): return 2
+    if code in ('INVALID_REQUEST','CONFIRMATION_REQUIRED','CURSOR_INVALID','PROMPT_INVALID','TASK_REVISION_CONFLICT'): return 2
     if code in ('CORE_UNAVAILABLE','PROJECT_UNAVAILABLE','STORE_UNAVAILABLE','PROJECT_NOT_FOUND'): return 3
     if code in ('CORRUPT_OBJECT','DATABASE_CORRUPT','SCHEMA_VERSION_UNSUPPORTED','STORE_IDENTITY_MISMATCH'): return 4
     return 1
@@ -48,9 +48,12 @@ def _parser():
     show=actions.add_parser('show');show.add_argument('project');show.add_argument('--watch',action='store_true');show.add_argument('--after',type=int,default=0)
     relink=actions.add_parser('relink');relink.add_argument('project');relink.add_argument('--root',required=True);relink.add_argument('--store',required=True);relink.add_argument('--confirm-root')
     unregister=actions.add_parser('unregister');unregister.add_argument('project')
+    from .task_cli import add_parsers
+    add_parsers(commands,actions)
     checkpoints=commands.add_parser('checkpoint'); actions=checkpoints.add_subparsers(dest='action',required=True)
     for action in ('create','list','verify','restore','usage'):
         p=actions.add_parser(action);p.add_argument('project')
+        if action=='list': p.add_argument('--all-workspaces',action='store_true')
         if action=='create': p.add_argument('message');p.add_argument('--exclude',action='append',default=[])
         if action in ('verify','restore'): p.add_argument('checkpoint')
         if action=='restore':p.add_argument('--to',dest='destination',required=True)
@@ -120,19 +123,38 @@ def main(argv=None):
                 print(f'Relink source root to {root}? [y/N] ',end='',file=sys.stderr,flush=True)
                 if input().strip().lower()=='y':confirmed=root
             params.update(root=root,store=str(Path(args.store).resolve()),confirmed_root=confirmed or '')
+        if args.command in ('task','workspace') or (args.command=='project' and args.action in ('upgrade','prompt-policy')):
+            from .task_cli import prepare
+            method,params=prepare(client,args,params['project'],globals_.request_id)
         if args.command=='checkpoint':
+            if args.action=='list' and args.all_workspaces:
+                from .task_cli import unwrap
+                if 'tasks.v1' not in unwrap(client.request('core.status',{})).get('capabilities',[]):
+                    raise CoreError('CORE_UPGRADE_REQUIRED','The core cannot list task history.','Activate a compatible core.')
+                params['all_workspaces']=True
             if args.action=='create':params.update(message=args.message,exclusions=args.exclude)
             if args.action in ('verify','restore'):params['checkpoint']=args.checkpoint
             if args.action=='restore':params['destination']=str(Path(args.destination).absolute())
         if args.command=='operation':params['operation']=args.operation
         result=client.request(method,params,request_id=globals_.request_id)
-        emit(result,as_json)
+        if result['ok'] and getattr(args,'wait',False) and 'operation_id' in result['result']:
+            from .task_cli import wait_for_operation
+            result=wait_for_operation(client,params['project'],result)
+        if result['ok'] and method=='task.prompt.show' and not as_json:
+            text=result['result'].get('body')
+            if text is None:
+                raise CoreError('PROMPT_UNAVAILABLE','Prompt text is '+result['result']['status']+'.','Inspect prompt metadata with --json.')
+            sys.stdout.buffer.write(text.encode('utf-8'));sys.stdout.buffer.flush()
+        else: emit(result,as_json)
         if not result['ok']:return exit_code(result['error']['code'])
+        if getattr(args,'wait',False) and result['result'].get('state') in ('failed','interrupted'):return 1
         if getattr(args,'watch',False):
             if args.command=='operation' and result['result']['state'] not in ('queued','running'):
                 return 0 if result['result']['state']=='succeeded' else 1
             for event in client.subscribe(params['project'],getattr(args,'after',0)):
-                emit(response(None,result=event),as_json)
+                if args.command=='task':
+                    emit(client.request('task.show',dict(project=params['project'],task=params['task'])),as_json)
+                else: emit(response(None,result=event),as_json)
                 if args.command=='operation' and event['operation_id']==args.operation and event['state'] in ('succeeded','failed','interrupted'):
                     return 0 if event['state']=='succeeded' else 1
         return 0

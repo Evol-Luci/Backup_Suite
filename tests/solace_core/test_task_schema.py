@@ -19,9 +19,11 @@ def create_v1(registration,policy):
     root,store=Path(registration['root']),Path(registration['store'])
     repo=ProjectRepository(root,store)
     (store/'objects').mkdir(mode=0o700,exist_ok=True)
+    store.chmod(0o700)
     with repo._connect() as db:
         db.executescript(V1)
         db.execute('INSERT INTO core_metadata VALUES (1,1,?,?)',(registration['id'],registration['store_uuid']))
+    (store/'checkpoints.sqlite3').chmod(0o600)
     return ProjectCatalog(registration,policy)
 
 class SchemaTests(unittest.TestCase):

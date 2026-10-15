@@ -2,6 +2,7 @@
 import hashlib
 import json
 import uuid
+import re
 from pathlib import Path
 from .errors import CoreError, invalid
 
@@ -120,6 +121,33 @@ def validate_request(value):
     for key in ('root','store','destination','path','confirmed_path'):
         if key in params and not Path(params[key]).is_absolute():
             raise invalid('API filesystem paths must be absolute.')
+    if method in TASK_PARAMS:
+        for key in ('project','task','parent','operation','checkpoint','from_checkpoint'):
+            if key in params and re.fullmatch(r'[0-9a-f]{32}',params[key]) is None:
+                raise invalid('Task API identifiers must be exact lowercase UUID hex strings.')
+        if method in ('project.upgrade','workspace.staging.cleanup'):
+            if params['preview'] and 'plan_token' in params:
+                raise invalid('Preview does not accept an apply token.')
+            if not params['preview'] and 'plan_token' not in params:
+                raise invalid('Apply requires the reviewed preview token.')
+        if 'plan_token' in params and re.fullmatch(r'[0-9a-f]{64}',params['plan_token']) is None:
+            raise invalid('Plan tokens must be exact SHA256 hex strings.')
+        if method=='task.create':
+            from .tasks import profile
+            title=params['title']
+            if not title.strip() or len(title)>200 or not title.isprintable():raise invalid('Title must contain 1–200 printable characters.')
+            if ('parent' in params)!=('expected_parent_revision' in params):raise invalid('Child creation requires its parent revision.')
+            if 'parent' in params and 'exclusions' in params:raise invalid('Children inherit their capture profile.')
+            if 'exclusions' in params:profile(params['exclusions'])
+            if 'prompt_policy' in params or 'prompt_days' in params:
+                from .prompts import validate_policy
+                validate_policy(params.get('prompt_policy'),params.get('prompt_days'))
+        if method=='project.prompt-policy.set':
+            from .prompts import validate_policy
+            validate_policy(params['policy'],params.get('days'))
+        if method=='task.block' and len(params['reason'])>1024:raise invalid('Block reason is too long.')
+        if method=='workspace.relink' and params['writers_paused'] is not True:
+            raise CoreError('CONFIRMATION_REQUIRED','External writers must be paused for relink.','Pause them and explicitly acknowledge it.')
     return value
 
 
