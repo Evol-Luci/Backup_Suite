@@ -148,7 +148,7 @@ class WorkspacePaths:
 
 def protected_excluder(root,profile,owned_roots):
     root=Path(root)
-    owned=[Path(path).resolve() for path in owned_roots]
+    owned=[Path(path).resolve() for path in owned_roots if not root.is_relative_to(Path(path).resolve())]
     identities=[]
     for path in owned:
         try: identities.append(path.stat())

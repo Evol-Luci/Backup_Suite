@@ -1,6 +1,7 @@
 """Revisioned task records and body-free, transaction-local request receipts."""
 from datetime import datetime,timezone
 import json
+import sqlite3
 import uuid
 from pathlib import Path
 from .errors import CoreError,invalid
@@ -47,7 +48,8 @@ class TaskCatalog:
         self.catalog._event(db,dict(id=None,actor=request['actor']),kind,state,details)
 
     def row(self,db,task):
-        row=db.execute('SELECT * FROM tasks WHERE id=?',(task,)).fetchone()
+        cursor=db.cursor();cursor.row_factory=sqlite3.Row
+        row=cursor.execute('SELECT * FROM tasks WHERE id=?',(task,)).fetchone()
         if row is None:
             raise CoreError('TASK_NOT_FOUND','The task does not exist in this project.','List this project’s tasks.')
         return dict(row)

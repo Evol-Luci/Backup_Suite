@@ -11,7 +11,7 @@ import sqlite3
 import stat
 import tempfile
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -256,7 +256,7 @@ class ProjectRepository:
             )
 
     def create_checkpoint(self, message: str, exclusions: Sequence[str] = (), *,
-                          parent_id=LATEST_PARENT, excluded=None, publication_hook=None) -> Checkpoint:
+                          parent_id=LATEST_PARENT, excluded=None, publication_hook=None, publication_guard=None) -> Checkpoint:
         if parent_id is not LATEST_PARENT and parent_id is not None:
             with self._connect() as connection:
                 if connection.execute('SELECT 1 FROM checkpoints WHERE id=?', (parent_id,)).fetchone() is None:
@@ -265,30 +265,31 @@ class ProjectRepository:
         for entry in entries:
             for digest in entry.chunk_digests:
                 self.object_store.read_object(digest)
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            if parent_id is LATEST_PARENT:
-                parent = connection.execute(
-                    "SELECT id FROM checkpoints ORDER BY created_at DESC, rowid DESC LIMIT 1"
-                ).fetchone()
-                selected_parent = parent[0] if parent else None
-            else:
-                selected_parent = parent_id
-                if parent_id is not None and connection.execute(
-                        'SELECT 1 FROM checkpoints WHERE id=?', (parent_id,)).fetchone() is None:
-                    raise CheckpointNotFound('explicit parent checkpoint does not exist')
-            checkpoint = Checkpoint(
-                id=uuid.uuid4().hex,
-                message=message,
-                created_at=datetime.now(timezone.utc).isoformat(),
-                parent_id=selected_parent,
-                file_count=len(entries),
-                logical_bytes=sum(entry.size for entry in entries),
-                warnings=tuple(warnings),
-            )
-            self._insert_checkpoint(connection, checkpoint, entries)
-            if publication_hook is not None:
-                publication_hook(connection, checkpoint)
+        with publication_guard if publication_guard is not None else nullcontext():
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if parent_id is LATEST_PARENT:
+                    parent = connection.execute(
+                        "SELECT id FROM checkpoints ORDER BY created_at DESC, rowid DESC LIMIT 1"
+                    ).fetchone()
+                    selected_parent = parent[0] if parent else None
+                else:
+                    selected_parent = parent_id
+                    if parent_id is not None and connection.execute(
+                            'SELECT 1 FROM checkpoints WHERE id=?', (parent_id,)).fetchone() is None:
+                        raise CheckpointNotFound('explicit parent checkpoint does not exist')
+                checkpoint = Checkpoint(
+                    id=uuid.uuid4().hex,
+                    message=message,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                    parent_id=selected_parent,
+                    file_count=len(entries),
+                    logical_bytes=sum(entry.size for entry in entries),
+                    warnings=tuple(warnings),
+                )
+                self._insert_checkpoint(connection, checkpoint, entries)
+                if publication_hook is not None:
+                    publication_hook(connection, checkpoint)
         return checkpoint
 
     @staticmethod

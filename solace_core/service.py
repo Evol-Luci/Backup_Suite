@@ -143,6 +143,30 @@ class CoreService:
                 return result
         if method == 'project.show':
             return self.registry.show(project)
+        if method in ('project.upgrade','project.prompt-policy.show','project.prompt-policy.set') or method.startswith(('task.','workspace.')):
+            from .tasks import TaskCatalog
+            from .prompts import PromptStore
+            from .task_operations import TaskOperations
+            from .schema import preview_upgrade,apply_upgrade,require_tasks
+            with coordinator.lock:
+                catalog,registered=self._receipt_catalog(project)
+                if method=='project.upgrade':
+                    if not registered: raise CoreError('PROJECT_NOT_FOUND','The project is no longer registered.','Register it before upgrading.')
+                    return preview_upgrade(catalog) if p['preview'] else apply_upgrade(catalog,p.get('plan_token'),request)
+                require_tasks(catalog);tasks=TaskCatalog(catalog);prompts=PromptStore(catalog)
+                if method=='task.show': return tasks.show(p['task'])
+                if method=='task.list': return dict(tasks=tasks.list(p.get('parent')))
+                if method=='task.prompt.show': return prompts.read(p['task'])
+                if method=='project.prompt-policy.show': return prompts.policy()
+                if method=='workspace.status' and not p.get('refresh',False):
+                    return dict(task_id=p['task'],workspace=tasks.show(p['task'])['workspace'])
+                with catalog.connect() as db: cached=tasks.lookup_request(request,db)
+                if cached is not None: return cached
+                if not registered: raise CoreError('PROJECT_NOT_FOUND','The project is no longer registered.','Retained records are read-only.')
+                if method=='task.create': return tasks.create(request)
+                if method=='task.prompt.delete': return prompts.delete(request)
+                if method=='project.prompt-policy.set': return prompts.set_policy(request)
+                return TaskOperations(self,catalog).accept(request)
         with coordinator.lock:
             if method in ('checkpoint.create', 'checkpoint.verify', 'checkpoint.restore', 'operation.show'):
                 catalog, registered = self._receipt_catalog(project)

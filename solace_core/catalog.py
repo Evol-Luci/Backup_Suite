@@ -205,7 +205,7 @@ class ProjectCatalog:
         db.execute('UPDATE operations SET state=?,updated_at=?,result_json=?,error_json=? WHERE id=?',
                    (state,self._now(),json.dumps(result) if result is not None else None,
                     json.dumps(error) if error is not None else None,operation_id))
-        details = {k:v for k,v in (result or {}).items() if k in ('checkpoint_id','file_count','logical_bytes')}
+        details = {k:v for k,v in (result or {}).items() if k in ('checkpoint_id','file_count','logical_bytes','task_id','workspace_id','revision')}
         if error:
             details['error_code'] = error['code']
         self._event(db, dict(row), kind or 'operation.' + state, state, details)
