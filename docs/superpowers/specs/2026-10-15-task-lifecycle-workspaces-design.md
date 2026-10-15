@@ -1,6 +1,6 @@
 # Parent/Child Tasks and Isolated Workspaces
 
-**Status:** Proposed subsystem design; awaiting written-spec review.
+**Status:** Approved by the user on 2026-10-15; implementation-plan review is next.
 **Base:** Local `main` at `40c8d22`; installed core remains the independently reviewed version.
 **Authority:** `docs/specs/local-first-agent-version-engine.md`, especially sections 4–7, and the completed local-core subsystem spec.
 **Delivery:** Linux first, existing Python standard-library core, SQLite, local Unix API, and CLI.
@@ -127,7 +127,7 @@ No retry/repair command deletes a pre-existing directory. Cleanup of known opera
 
 Store exact supplied UTF-8 prompt text in a separate per-task prompt record. No implicit newline changes. Limit prompts to 128 KiB UTF-8 and also enforce the existing complete-frame bound. Reject binary/NUL/invalid UTF-8 input with a clear error. Missing prompt text is allowed for manually tracked tasks and is distinguishable from a deleted prompt.
 
-Proposed project default: expire prompt text after 30 days. Project policy can select `retain`, a positive day count, or `none`; task creation may override it. Effective policy is fixed at task creation so later project policy changes do not silently rewrite existing retention decisions. `none` never persists the body. Exact defaults are proposals for written-spec review, not existing installed behavior.
+Approved project default: expire prompt text after 30 days. Project policy can select `retain`, a positive day count, or `none`; task creation may override it. Effective policy is fixed at task creation so later project policy changes do not silently rewrite existing retention decisions. `none` never persists the body. These are approved requirements for the next implementation, not existing installed behavior.
 
 Normal list/show/watch results contain prompt availability and expiration metadata, not the body. Prompt show requires an explicit command; delete clears the logical body while retaining task/history references. Do not duplicate prompt bodies into task titles, result messages, operation rows, request receipts, events, logs, cache names, or workspaces. Body hashes used for request identity do not expose plaintext through APIs.
 
@@ -165,4 +165,4 @@ Task IDs are labels, not authorization secrets. All clients already run as the s
 
 The implementation plan will supply exact schemas, migration SQL, API signatures/command grammar, task revision conditions, reusable safe materialization helpers, explicit recovery commands, prompt maintenance cadence, base-cache identity format, copy/reflink error classification, storage reporting, and test fixtures. It must preserve the choices and boundaries above and identify any existing engine limitations before promising additional guarantees.
 
-Written-spec approval is the next gate. After approval, prepare the task-by-task implementation plan for review, preserving inline execution as the established preference unless the user selects another method.
+Written-spec approval was received on 2026-10-15. Prepare the task-by-task implementation plan for review, preserving inline execution as the established preference unless the user selects another method. Product implementation begins after that plan review.
