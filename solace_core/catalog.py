@@ -5,6 +5,7 @@ import os
 import sqlite3
 import json
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from .protocol import fingerprint
@@ -22,10 +23,17 @@ def readonly_database(path):
         raise CoreError('STORE_UNAVAILABLE', 'The database is unavailable.', 'Reconnect storage or explicitly relink.')
     wal = Path(str(path) + '-wal')
     shm = Path(str(path) + '-shm')
-    if wal.exists() and not shm.exists():
-        raise CoreError('STORE_UNAVAILABLE', 'Read-only access would need to create WAL metadata.', 'Inspect the database with the core stopped after a clean shutdown; preserve its WAL.')
+    # A live writer can create/remove the pair between our separate stats.
+    # Retry observation only; a persistently orphaned WAL remains an error.
+    for attempt in range(11):
+        wal_present=wal.exists()
+        if not wal_present or shm.exists():
+            break
+        if attempt==10:
+            raise CoreError('STORE_UNAVAILABLE', 'Read-only access would need to create WAL metadata.', 'Inspect the database with the core stopped after a clean shutdown; preserve its WAL.')
+        time.sleep(0.005)
     # Offline WAL-format databases otherwise create sidecars even with mode=ro.
-    uri = path.resolve().as_uri() + '?mode=ro' + ('' if wal.exists() else '&immutable=1')
+    uri = path.resolve().as_uri() + '?mode=ro' + ('' if wal_present else '&immutable=1')
     db = sqlite3.connect(uri, uri=True, timeout=30)
     try:
         db.execute('PRAGMA query_only=ON')

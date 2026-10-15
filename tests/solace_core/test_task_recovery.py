@@ -122,3 +122,17 @@ class RecoveryTests(TaskCase):
         req=self.request('workspace.recovery.abandon',operation=operation,task=task,expected_revision=1)
         abandoned=self.service.handle(req);self.assertTrue(abandoned['ok'],abandoned)
         self.assertEqual(self.service.handle(req),abandoned);self.assertTrue(staging.exists())
+
+    def test_readonly_catalog_tolerates_a_wal_disappearing_between_sidecar_checks(self):
+        from unittest.mock import patch
+        from solace_core.catalog import readonly_database
+        catalog=self.service.catalog(self.project)
+        before={p.name:p.read_bytes() for p in catalog.store.iterdir() if p.is_file()}
+        wal=Path(str(catalog.database)+'-wal');original_exists=Path.exists;observed=[]
+        def exists(path):
+            if path==wal and not observed:
+                observed.append(True);return True
+            return original_exists(path)
+        with patch.object(Path,'exists',exists),readonly_database(catalog.database) as db:
+            self.assertEqual(db.execute('SELECT schema_version FROM core_metadata').fetchone()[0],2)
+        self.assertEqual(before,{p.name:p.read_bytes() for p in catalog.store.iterdir() if p.is_file()})
