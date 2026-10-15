@@ -138,13 +138,13 @@ class ProjectRepository:
         finally:
             connection.close()
 
-    def _excluded(self, path: Path, relative: str, exclusions: Sequence[str]) -> bool:
-        if path == self.store_dir or self.store_dir in path.parents:
+    def _excluded(self, path: Path, relative: str, exclusions: Sequence[str], *, include_store=False) -> bool:
+        if not include_store and (path == self.store_dir or self.store_dir in path.parents):
             return True
         return any(fnmatch.fnmatchcase(relative, pattern) or
                    fnmatch.fnmatchcase(path.name, pattern) for pattern in exclusions)
 
-    def _scan(self, exclusions: Sequence[str], *, excluded=None, store_objects=True) -> tuple[list[FileEntry], list[str]]:
+    def _scan(self, exclusions: Sequence[str], *, excluded=None, store_objects=True, include_store=False) -> tuple[list[FileEntry], list[str]]:
         entries: list[FileEntry] = []
         warnings: list[str] = []
 
@@ -162,7 +162,7 @@ class ProjectRepository:
             for name in names:
                 path = directory / name
                 relative = path.relative_to(self.project_root).as_posix()
-                if self._excluded(path, relative, exclusions):
+                if self._excluded(path, relative, exclusions, include_store=include_store):
                     continue
                 metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                 if excluded is not None and excluded(relative, metadata):
@@ -231,9 +231,9 @@ class ProjectRepository:
             os.close(root_fd)
         return entries, warnings
 
-    def inspect_tree(self, exclusions=(), *, excluded=None):
+    def inspect_tree(self, exclusions=(), *, excluded=None, include_store=False):
         """Hash the current tree without creating objects or checkpoints."""
-        return self._scan(exclusions,excluded=excluded,store_objects=False)
+        return self._scan(exclusions,excluded=excluded,store_objects=False,include_store=include_store)
 
     def _insert_checkpoint(self, connection: sqlite3.Connection, checkpoint: Checkpoint,
                            entries: list[FileEntry]) -> None:

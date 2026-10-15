@@ -90,17 +90,21 @@ class WorkspacePaths:
         self.validate(path,expected=expected)
         descriptors=[];identities=[];current=Path('/')
         try:
-            fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY);descriptors.append(fd);identities.append((current,os.fstat(fd)))
-            for name in path.parts[1:]:
-                fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
-                current=current/name;descriptors.append(fd);identities.append((current,os.fstat(fd)))
+            try:
+                fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY);descriptors.append(fd);identities.append((current,os.fstat(fd)))
+                for name in path.parts[1:]:
+                    fd=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+                    current=current/name;descriptors.append(fd);identities.append((current,os.fstat(fd)))
+            except OSError as error:
+                raise CoreError('WORKSPACE_UNAVAILABLE','A workspace ancestor is unavailable.','Preserve its files and inspect recovery.') from error
             yield fd
-            for named,identity in identities:
-                if named.is_symlink() or not os.path.samestat(identity,named.stat()):
-                    raise CoreError('WORKSPACE_IDENTITY_MISMATCH','A workspace ancestor changed during the operation.','Preserve the preparation and inspect its recovery record.')
-            self.validate(path,expected=expected)
-        except OSError as error:
-            raise CoreError('WORKSPACE_UNAVAILABLE','A workspace path changed or became unavailable.','Preserve its files and inspect recovery.') from error
+            try:
+                for named,identity in identities:
+                    if named.is_symlink() or not os.path.samestat(identity,named.stat()):
+                        raise CoreError('WORKSPACE_IDENTITY_MISMATCH','A workspace ancestor changed during the operation.','Preserve the preparation and inspect its recovery record.')
+                self.validate(path,expected=expected)
+            except OSError as error:
+                raise CoreError('WORKSPACE_UNAVAILABLE','A workspace ancestor changed.','Preserve its files and inspect recovery.') from error
         finally:
             for fd in reversed(descriptors): os.close(fd)
 
