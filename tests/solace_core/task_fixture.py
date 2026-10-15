@@ -12,10 +12,12 @@ class CatalogCase(unittest.TestCase):
         self.tasks=TaskCatalog(self.catalog)
 
     def request(self,method,**params):
-        params.setdefault('project',self.project if isinstance(self.project,str) else self.registration['id'])
+        if method not in ('core.status','project.add','project.list'):
+            params.setdefault('project',self.project if isinstance(self.project,str) else self.registration['id'])
         return dict(version=1,id=str(uuid.uuid4()),method=method,params=params,actor='test')
 
 class TaskCase(unittest.TestCase):
+    temporary_parent="/var/tmp"
     call=test_service.ServiceTests.call
     wait_operation=test_service.ServiceTests.wait_operation
     request=CatalogCase.request

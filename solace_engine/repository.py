@@ -144,7 +144,7 @@ class ProjectRepository:
         return any(fnmatch.fnmatchcase(relative, pattern) or
                    fnmatch.fnmatchcase(path.name, pattern) for pattern in exclusions)
 
-    def _scan(self, exclusions: Sequence[str], *, excluded=None) -> tuple[list[FileEntry], list[str]]:
+    def _scan(self, exclusions: Sequence[str], *, excluded=None, store_objects=True) -> tuple[list[FileEntry], list[str]]:
         entries: list[FileEntry] = []
         warnings: list[str] = []
 
@@ -173,9 +173,9 @@ class ProjectRepository:
                     target = os.readlink(name, dir_fd=directory_fd).encode("utf-8", "surrogateescape")
                     require_identity(metadata, os.stat(name, dir_fd=directory_fd,
                                                        follow_symlinks=False), relative)
-                    digest = self.object_store.put_bytes(target)
+                    digest = self.object_store.put_bytes(target) if store_objects else hashlib.sha256(target).hexdigest()
                     entries.append(FileEntry(relative, "symlink", metadata.st_mode & 0o777,
-                                             len(target), digest, (digest,)))
+                                             len(target), digest, (digest,) if store_objects else ()))
                 elif stat.S_ISDIR(metadata.st_mode):
                     child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                        dir_fd=directory_fd)
@@ -198,8 +198,16 @@ class ProjectRepository:
                         # The proc fd path remains attached to this inode if another
                         # agent replaces the directory entry during chunking.
                         try:
-                            digest, size, chunks = self.object_store.put_file(
-                                Path(f"/proc/self/fd/{file_fd}"))
+                            if store_objects:
+                                digest, size, chunks = self.object_store.put_file(
+                                    Path(f"/proc/self/fd/{file_fd}"))
+                            else:
+                                hasher=hashlib.sha256();size=0
+                                while True:
+                                    block=os.read(file_fd,1024*1024)
+                                    if not block: break
+                                    hasher.update(block);size+=len(block)
+                                digest=hasher.hexdigest();chunks=()
                         except CorruptObject:
                             raise
                         except RepositoryError as error:
@@ -222,6 +230,10 @@ class ProjectRepository:
         finally:
             os.close(root_fd)
         return entries, warnings
+
+    def inspect_tree(self, exclusions=(), *, excluded=None):
+        """Hash the current tree without creating objects or checkpoints."""
+        return self._scan(exclusions,excluded=excluded,store_objects=False)
 
     def _insert_checkpoint(self, connection: sqlite3.Connection, checkpoint: Checkpoint,
                            entries: list[FileEntry]) -> None:

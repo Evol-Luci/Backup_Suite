@@ -24,18 +24,8 @@ class StoragePolicy:
         if sync_roots is None:
             sync_roots = [Path.home() / name for name in ('Dropbox', 'Google Drive', 'Nextcloud')]
             data = Path(os.environ.get('XDG_DATA_HOME') or str(Path.home() / '.local/share'))
-            config = data / 'solace/core-config.json'
-            if config.exists():
-                try:
-                    value = json.loads(config.read_text())
-                    configured = value.get('sync_roots', [])
-                    if (not isinstance(value, dict) or set(value) - {'sync_roots'}
-                            or not isinstance(configured, list)
-                            or any(not isinstance(p, str) or not Path(p).is_absolute() or '\0' in p for p in configured)):
-                        raise ValueError()
-                    sync_roots += configured
-                except (ValueError, TypeError, AttributeError, OSError) as error:
-                    raise invalid('The core configuration must contain only absolute sync_roots paths.') from error
+            from .workspace_paths import CoreConfig
+            sync_roots = CoreConfig.load(data).sync_roots
         self.sync_roots = [Path(p).resolve() for p in sync_roots]
 
     def check(self, path, *, creating=False):

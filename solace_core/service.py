@@ -15,8 +15,13 @@ log = logging.getLogger(__name__)
 
 
 class CoreService:
-    def __init__(self, registry, *, workers=8):
+    def __init__(self, registry, *, workers=8, config=None):
         self.registry = registry
+        from .workspace_paths import CoreConfig,WorkspacePaths
+        data=Path(os.environ.get('XDG_DATA_HOME') or str(Path.home()/'.local/share'))
+        self.config=config or CoreConfig.load(data)
+        self.workspace_paths=WorkspacePaths(registry,self.config,registry.policy)
+        registry.workspace_guard=self.workspace_paths.guard_source
         self._closed = False
         self._guard = threading.RLock()
         self._catalogs, self._coordinators = {}, {}

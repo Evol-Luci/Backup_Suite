@@ -171,6 +171,7 @@ class Registry:
                 if intent['fingerprint'] != signature:
                     raise CoreError('REQUEST_ID_REUSED', 'Request arguments changed.', 'Use a new request ID.')
                 raise CoreError('OPERATION_INTERRUPTED', 'Registration was interrupted.', 'Run doctor and preserve its store; restart the core to reconcile.')
+            if getattr(self,'workspace_guard',None): self.workspace_guard(root)
             if not root.is_dir():
                 raise CoreError('PROJECT_UNAVAILABLE', 'The source directory is unavailable.', 'Choose an existing directory.')
             project_id, store_uuid = uuid.uuid4().hex, uuid.uuid4().hex
@@ -238,6 +239,7 @@ class Registry:
             location = self.policy.check(store)
             record.update(root=str(root), store=str(store), mount_id=location.mount_id)
             ProjectCatalog(record, self.policy).validate()
+            if getattr(self,'workspace_guard',None): self.workspace_guard(root,project_id,record)
             result = dict(record, available=True)
             with self.connect(write=True) as db:
                 try:

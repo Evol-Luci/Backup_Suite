@@ -17,7 +17,7 @@ from solace_engine.repository import ProjectRepository
 
 class ServiceTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.tmp = tempfile.TemporaryDirectory(dir=getattr(self,'temporary_parent',None)); self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.root = self.base/'source'; self.root.mkdir()
         self.policy = StoragePolicy(mountinfo='1 0 0:1 / / rw - ext4 x rw\n', sync_roots=[])
