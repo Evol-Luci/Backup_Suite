@@ -21,7 +21,8 @@ def add_parsers(commands,project_actions):
         if action=='create':
             p.add_argument('title');p.add_argument('--parent');p.add_argument('--parent-revision',type=int)
             p.add_argument('--prompt-file');p.add_argument('--prompt-retention');p.add_argument('--exclude',action='append')
-        elif action=='list': p.add_argument('--parent')
+        elif action=='list':
+            p.add_argument('--parent');p.add_argument('--after',type=int);p.add_argument('--limit',type=int)
         else: p.add_argument('task')
         if action in ('start','block','resume','ready','cancel'): p.add_argument('--revision',type=int)
         if action=='block': p.add_argument('--reason',required=True)
@@ -102,6 +103,8 @@ def prepare(client,args,project,request_id=None):
                 params.update(prompt_policy='days',prompt_days=days)
     elif method=='task.list':
         if args.parent:params['parent']=args.parent
+        for key in ('after','limit'):
+            if getattr(args,key) is not None:params[key]=getattr(args,key)
     elif method=='workspace.staging':
         method='workspace.staging.cleanup';params.update(operation=args.operation,preview=args.preview)
         if args.plan_token is not None:params['plan_token']=args.plan_token

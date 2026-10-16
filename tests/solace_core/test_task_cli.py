@@ -10,6 +10,26 @@ from task_fixture import TaskCase
 from solace_core.server import SocketServer,bind_private_socket
 
 class TaskCLITests(TaskCase):
+    def test_task_listing_pages_large_cached_views(self):
+        from solace_core.client import CoreClient
+        client=CoreClient(self.path);tasks=[]
+        for index in range(30):
+            task=self.create_task('aggregate '+str(index));started=self.start(task);tasks.append(task)
+            report=dict(checkpoint_id=started['base_checkpoint'],observed_at='2026-10-15T00:00:00+00:00',
+                        clean=False,added=[str(i)+'x'*3990 for i in range(32)],removed=[],changed=[],warnings=[],logical_bytes=0)
+            with self.service.catalog(self.project).connect(write=True) as db:
+                db.execute('UPDATE workspaces SET observed_json=? WHERE task_id=?',(json.dumps(report),task))
+        first=client.request('task.list',dict(project=self.project))
+        self.assertTrue(first['ok'],first)
+        seen=[];page=first['result']
+        while True:
+            seen += [task['id'] for task in page['tasks']]
+            if page['next_after'] is None:break
+            value=client.request('task.list',dict(project=self.project,after=page['next_after'],limit=5))
+            self.assertTrue(value['ok'],value);page=value['result']
+        self.assertEqual(seen,tasks)
+        self.assertEqual(len(self.result('task','list',self.project,'--limit','5')['tasks']),5)
+
     def test_oversized_response_preserves_request_correlation(self):
         from solace_core.client import CoreClient
         from solace_core.protocol import MAX_FRAME

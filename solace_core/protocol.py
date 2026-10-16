@@ -26,7 +26,7 @@ TASK_PARAMS = {
     'project.prompt-policy.show': ({'project'},set()),
     'project.prompt-policy.set': ({'project','policy','expected_revision'},{'days'}),
     'task.create': ({'project','title'},{'parent','expected_parent_revision','prompt','prompt_policy','prompt_days','exclusions'}),
-    'task.list': ({'project'},{'parent'}), 'task.show': ({'project','task'},set()),
+    'task.list': ({'project'},{'parent','after','limit'}), 'task.show': ({'project','task'},set()),
     'task.start': ({'project','task','expected_revision'},{'from_checkpoint','expected_parent_revision'}),
     'task.block': ({'project','task','expected_revision','reason'},set()),
     'task.resume': ({'project','task','expected_revision'},set()),

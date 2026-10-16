@@ -254,7 +254,7 @@ class CoreService:
                 require_tasks(catalog);tasks=TaskCatalog(catalog);prompts=PromptStore(catalog)
                 if method=='workspace.recovery.show': return TaskOperations(self,catalog).inspect_recovery(p['operation'])
                 if method=='task.show': return tasks.show(p['task'])
-                if method=='task.list': return dict(tasks=tasks.list(p.get('parent')))
+                if method=='task.list': return tasks.list_page(p.get('parent'),p.get('after',0),p.get('limit',128))
                 if method=='task.prompt.show': return prompts.read(p['task'])
                 if method=='project.prompt-policy.show': return prompts.policy()
                 if method=='workspace.status' and not p.get('refresh',False):

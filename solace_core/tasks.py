@@ -165,6 +165,25 @@ class TaskCatalog:
             else: ids=[r[0] for r in db.execute('SELECT id FROM tasks ORDER BY created_at,rowid')]
         return [self.show(task) for task in ids]
 
+    def list_page(self,parent=None,after=0,limit=128):
+        """Stable creation-row cursor; each row shows its current state."""
+        from .observations import encoded_size
+        require_tasks(self.catalog)
+        with self.catalog.connect() as db:
+            if parent is not None:self.row(db,parent)
+            rows=db.execute('SELECT rowid,id FROM tasks WHERE rowid>?'+
+                            (' AND parent_id=?' if parent is not None else '')+' ORDER BY rowid LIMIT ?',
+                            (after,parent,limit+1) if parent is not None else (after,limit+1)).fetchall()
+        tasks=[];size=0;cursor=after
+        for row in rows[:limit]:
+            task=self.show(row[1]);count=encoded_size(task)+1
+            if size+count>512*1024:
+                if tasks:return dict(tasks=tasks,next_after=cursor)
+                if count>1024*1024-4096:
+                    raise CoreError('RESPONSE_TOO_LARGE','A task view exceeds the page limit.','Inspect this task locally.')
+            tasks.append(task);size+=count;cursor=row[0]
+        return dict(tasks=tasks,next_after=cursor if len(rows)>limit else None)
+
     def transition(self,request):
         require_tasks(self.catalog)
         p=request['params'];task=p['task'];method=request['method']

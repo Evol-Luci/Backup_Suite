@@ -67,6 +67,8 @@ solace workspace status PROJECT TASK --after CURSOR --observation TOKEN --limit 
 
 API paging parameters are `after` (nonnegative), `limit` (1–256, default 128), and `observation` (SHA256 token, required after cursor 0). Pages are also capped at 128 KiB. A refresh cannot accept paging parameters. If the cached observation changes between pages, `OBSERVATION_CHANGED` requires restarting at cursor 0. Frame-limit errors retain their request ID and report `RESPONSE_TOO_LARGE`.
 
+Task lists also accept `--after CURSOR --limit N` (default 128, maximum 256). The response has a `tasks` array and `next_after` cursor, or null at the end. Pages are bounded by bytes as well as count, so use the returned cursor even if a page has fewer than N rows. Task cursors follow stable creation order; each row shows its current state, with no promise of a snapshot across pages. `--parent ID` limits every page to that parent's children.
+
 ## Recovery and explicit relink
 
 ```bash
