@@ -4,7 +4,7 @@ Branch `codex/task-workspace-design`, product baseline `40c8d22`, verified imple
 
 ## Verification
 
-All **191 tests pass**: 52 engine, 123 core and 16 legacy. `git diff --check` passed. The baseline had 122 tests; no previous test was removed. Deliberate compatibility assertion changes support core schema 2, refuse schema 3, and refuse unregister when ownership cannot be checked in an unreadable catalog.
+All **191 tests pass**: 52 engine, 123 core and 16 legacy. The final Task 10 completion run reconfirmed all three suites (52 in 1.925s, 123 in 56.691s, 16 in 0.471s); its complete combined output is [task-10-tests.log](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/task-10-tests.log). `git diff --check` passed. The baseline had 122 tests; no previous test was removed. Deliberate compatibility assertion changes support core schema 2, refuse schema 3, and refuse unregister when ownership cannot be checked in an unreadable catalog.
 
 ```bash
 python -m unittest discover -s tests/solace_engine -p 'test_*.py' -v
@@ -93,7 +93,7 @@ Deferred minors: none established separately. These rulings explicitly cover eve
 - Candidate unit verification: `systemd-analyze --user verify` returned 0 for staged units in `/tmp/solace-task-workspaces-4681a85c8a74759d-units`; this verifies unit syntax/wiring, not live startup.
 - Fresh apply creates a uniquely named backup beneath `/home/lucievol/.local/share/solace/core-install-backups/`, preserving previous launcher/unit bytes and a rollback manifest. The exact new backup ID is allocated only on apply and must come from that apply result. Existing runtime and prior backup `20261015T111851Z-76a1c4a2` remain preserved.
 - Supported core schemas: 1 and 2; new projects use 2. Engine/registry versions stay 1. Installation does not migrate existing catalogs. Runtime rollback never downgrades databases or erases workspace references.
-- Disposable installed acceptance fixture reserved in this preview: `/home/lucievol/.local/share/solace/acceptance/task-workspaces-20261015-a12a16b1`. It has not been created.
+- Disposable installed acceptance fixture reserved in this preview: `/home/lucievol/.local/share/solace/acceptance/task-workspaces-20261015-a12a16b1`. It has not been created. Immutable-result restore fixtures will use `/var/tmp/solace-installed-results-task-workspaces-20261015-a12a16b1`, also currently absent; restore destinations must be outside the protected registry data directory.
 
 After installation approval, the proposed commands are:
 
@@ -110,3 +110,5 @@ The reviewed acceptance script requires an empty registry before creating fixtur
 Rollback uses the **new apply result's** `rollback_command`, then `systemctl --user daemon-reload` and restoration of activation settings. Preserve that command and install result; do not substitute a historical backup ID. Already upgraded catalogs require a schema-2-capable runtime and remain intact.
 
 Installation, installed acceptance, merge and remote publication have not occurred. The feature branch and worktree remain available at the approved installation gate.
+
+Task 10 candidate work is complete at its explicit installation gate. The final ledger and evidence were archived before removal of this plan's ignored execution scratch directory. The isolated Git worktree is preserved.
