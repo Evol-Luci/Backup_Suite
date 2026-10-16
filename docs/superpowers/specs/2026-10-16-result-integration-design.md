@@ -1,10 +1,10 @@
 # Manual Result Integration
 
-**Status:** Proposed written design for user review. This is not implementation or installation approval.
+**Status:** Design approved by the user on 2026-10-16. Implementation planning is authorized; implementation and installation are separate review gates.
 
 **Baseline:** Local `main` at `6af0b2c`; installed core `59f3d8340f868d4a`. The merged task/workspace milestone passed 192 tests and live acceptance. Design branch: `codex/task-integration-design`.
 
-**Scope assumption:** Support child → parent and root task → original project through the CLI/API. Build the GUI on that API afterward. The user approved continuing with source closeout and integration design; detailed behavior below remains proposed.
+**Approved scope:** Support child → parent and root task → original project through the CLI/API. Build the GUI on that API afterward. The user approved this written design after source closeout; it is the contract for the implementation plan.
 
 ## 1. Outcome and delivery boundary
 
@@ -184,6 +184,6 @@ Required acceptance cases include:
 
 After spec approval, write a separate implementation plan, execute in isolation, obtain independent whole-branch review, remediate confirmed defects with RED→GREEN tests, and present a concrete installer preview. Installation and disposable installed acceptance remain a separate approved action. This proposal does not authorize an agent to apply results to user projects.
 
-## 12. Decisions for written review
+## 12. Approved decisions
 
-The proposal deliberately selects both integration targets, manual approval with explicit unchecked acknowledgement, result-level application status, a same-filesystem sibling journal, conservative text merging and retained journals. These are concrete choices for review, not implemented behavior. Configured check execution, automatic policy, forward undo, GUI, rename heuristics/locks, deeper nesting and retention/GC are recorded as follow-ups rather than inferred approval for a larger implementation.
+The approved design selects both integration targets, manual approval with explicit unchecked acknowledgement, result-level application status, a same-filesystem sibling journal, conservative text merging and retained journals. These are implementation contracts; the behavior is not implemented yet. Configured check execution, automatic policy, forward undo, GUI, rename heuristics/locks, deeper nesting and retention/GC remain recorded follow-ups. The [implementation plan](../plans/2026-10-16-result-integration.md) is the next review artifact.
