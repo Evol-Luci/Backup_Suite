@@ -130,12 +130,12 @@ Both immutable runtimes and both uniquely named install backups are preserved:
 The second backup's previous bytes match the first candidate's installed digests, and current launcher/unit bytes match the corrected install result. To return fully to the pre-feature runtime, roll back these file changes in reverse order:
 
 ```bash
-python /var/tmp/solace-task-workspaces-closeout-20261016-jx3n1shg/rollback-core.py --rollback /home/lucievol/.local/share/solace/core-install-backups/20261016T131839Z-2e037263
-python /var/tmp/solace-task-workspaces-closeout-20261016-jx3n1shg/rollback-core.py --rollback /home/lucievol/.local/share/solace/core-install-backups/20261016T131221Z-c1ea3f1b
+python /home/lucievol/.local/share/solace/core-rollback-tools/e77eb01bf4e57e51/rollback-core.py --rollback /home/lucievol/.local/share/solace/core-install-backups/20261016T131839Z-2e037263
+python /home/lucievol/.local/share/solace/core-rollback-tools/e77eb01bf4e57e51/rollback-core.py --rollback /home/lucievol/.local/share/solace/core-install-backups/20261016T131221Z-c1ea3f1b
 systemctl --user daemon-reload
 systemctl --user restart solace-core.service
 ```
 
-These rollback commands are recorded, **not executed**. The installer script is pinned read-only in the closeout evidence archive so source-worktree cleanup cannot break rollback. The socket was enabled before installation and remains enabled. Runtime rollback preserves stores and never downgrades databases; the older runtime refuses schema-2 catalogs, whose task/workspace references remain intact and need a compatible runtime. No existing user project was migrated; only disposable acceptance stores were created/upgraded.
+These rollback commands are recorded, **not executed**. The installer script is pinned read-only in the persistent core rollback-tools directory so source-worktree cleanup cannot break rollback. The socket was enabled before installation and remains enabled. Runtime rollback preserves stores and never downgrades databases; the older runtime refuses schema-2 catalogs, whose task/workspace references remain intact and need a compatible runtime. No existing user project was migrated; only disposable acceptance stores were created/upgraded.
 
 Installation and installed acceptance are complete. Local `main` was fast-forwarded through `6ad4705` and all 192 tests passed again on the merged tree. The merged feature branch/worktree were retired after pinning the rollback script outside the worktree. No remote publication occurred. See the [main closeout record](2026-10-16-task-workspaces-main-closeout.md).

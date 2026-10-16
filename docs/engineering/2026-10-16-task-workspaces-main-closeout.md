@@ -14,7 +14,7 @@ Completed 2026-10-16 after the user approved closing out the feature branch and 
 
 [Before/after merge logs and merge output](/var/tmp/solace-task-workspaces-closeout-20261016-jx3n1shg) retain all three suite runs. The [installed acceptance record](2026-10-15-task-workspaces-review-and-acceptance.md) records the real runtime, disposable upgrade and rollback chain.
 
-Before worktree removal, the unchanged installer was pinned read-only at `/var/tmp/solace-task-workspaces-closeout-20261016-jx3n1shg/rollback-core.py`, and its SHA256 was verified against the checkout. The updated rollback instructions use this standalone script; they no longer require the retired feature worktree. Backup directories and runtime snapshots were preserved. No rollback was executed, and no project database was downgraded.
+Before worktree removal, the unchanged installer was pinned read-only outside temporary storage at `/home/lucievol/.local/share/solace/core-rollback-tools/e77eb01bf4e57e51/rollback-core.py`, and its SHA256 was verified against the checkout. The updated rollback instructions use this standalone script; they no longer require the retired feature worktree. Backup directories and runtime snapshots were preserved. No rollback was executed, and no project database was downgraded.
 
 ## Next work
 
