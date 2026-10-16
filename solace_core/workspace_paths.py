@@ -12,6 +12,19 @@ def overlap(a,b):
     return a.is_relative_to(b) or b.is_relative_to(a)
 
 
+def git_control_marker(path):
+    """Empty .git directories do not define repositories; ambiguous markers fail closed."""
+    try:
+        metadata=path.lstat()
+        if not stat.S_ISDIR(metadata.st_mode):return True
+        fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:
+            with os.scandir(fd) as entries:return next(entries,None) is not None
+        finally:os.close(fd)
+    except FileNotFoundError:return False
+    except OSError:return True
+
+
 @dataclass(frozen=True)
 class CoreConfig:
     sync_roots: tuple[Path,...]
@@ -67,7 +80,7 @@ class WorkspacePaths:
                 if overlap(canonical,Path(project[key])):
                     raise CoreError('UNSUPPORTED_STORAGE','The workspace overlaps a registered source or store.','Choose a separate unsynchronized local workspace root.')
         for ancestor in (canonical,*canonical.parents):
-            if os.path.lexists(ancestor/'.git'):
+            if git_control_marker(ancestor/'.git'):
                 raise CoreError('UNSUPPORTED_STORAGE','The workspace is inside a Git-controlled tree.','Choose a workspace root outside Git working trees.')
         if creating:
             return dict(path=str(canonical))

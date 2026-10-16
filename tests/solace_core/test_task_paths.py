@@ -5,6 +5,24 @@ from task_fixture import TaskCase
 from solace_core.errors import CoreError
 
 class PathTests(TaskCase):
+    def test_empty_git_directory_does_not_claim_a_working_tree(self):
+        marker=self.base/'.git';marker.mkdir()
+        task=self.create_task();started=self.start(task)
+        self.assertTrue(Path(started['path']).is_dir())
+        self.assertEqual(list(marker.iterdir()),[])
+        # Preserve fail-closed treatment of populated, unreadable, and pointer markers.
+        (marker/'HEAD').write_text('ref: refs/heads/main\n')
+        with self.assertRaises(CoreError) as caught:
+            self.service.workspace_paths.validate(self.config.workspace_root,creating=True)
+        self.assertEqual(caught.exception.code,'UNSUPPORTED_STORAGE')
+        (marker/'HEAD').unlink()
+        with patch('solace_core.workspace_paths.os.scandir',side_effect=PermissionError('unreadable marker')):
+            with self.assertRaises(CoreError):
+                self.service.workspace_paths.validate(self.config.workspace_root,creating=True)
+        marker.rmdir();marker.symlink_to(self.base/'missing-gitdir')
+        with self.assertRaises(CoreError):
+            self.service.workspace_paths.validate(self.config.workspace_root,creating=True)
+
     def test_placement_rejects_sources_stores_git_sync_and_overlap(self):
         from solace_core.workspace_paths import WorkspacePaths,CoreConfig
         paths=WorkspacePaths(self.registry,self.config,self.policy)

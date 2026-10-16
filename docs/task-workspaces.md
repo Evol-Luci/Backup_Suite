@@ -50,6 +50,8 @@ Default paths are `$XDG_DATA_HOME/solace/workspaces/PROJECT_ID/TASK_ID` (`~/.loc
 
 Workspaces must be outside registered source/store trees and Git-controlled ancestors, on supported writable local storage. Known/configured sync roots are refused; arbitrary background sync cannot be detected automatically. Missing or replaced workspaces are unavailable and are never recreated implicitly. Nested source stores remain supported, but cannot contain workspaces.
 
+An empty `.git` directory does not make an ancestor a Git working tree. Populated directories, pointer files, symlinks and unreadable Git markers are refused conservatively. Solace never removes or changes those markers.
+
 New source/store locations and workspace reservations also protect retained workspaces and preparations, including other projects and records retained after unregister or a workspace-root configuration change. Placement checks require those retained catalogs to be readable. Reconnect an unavailable recorded store, or explicitly relink its still-registered project, before reserving new locations. Ordinary reads and captures in already owned available workspaces do not perform a new reservation.
 
 Protected task exclusions remove `.git` files/directories at every depth, `.solace_vault`, and Solace-owned trees. Ordinary dotfiles remain included. Root `task create --exclude GLOB` records additional exclusions; children inherit the profile and cannot override it. Profile changes require a new task. Manual source checkpoints retain their existing behavior; default listing and source usage use source history, while `--all-workspaces` exposes task owners/profiles. Pre-upgrade checkpoint exclusions are labelled unknown.
