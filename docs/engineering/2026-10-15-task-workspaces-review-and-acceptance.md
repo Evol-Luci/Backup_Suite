@@ -1,6 +1,6 @@
 # Task/workspace review and installed acceptance
 
-Branch `codex/task-workspace-design`, product baseline `40c8d22`, verified implementation through `63e8452`. The approved [design](../superpowers/specs/2026-10-15-task-lifecycle-workspaces-design.md) and [plan](../superpowers/plans/2026-10-15-task-lifecycle-workspaces.md) govern this candidate. Installation and disposable live acceptance completed on 2026-10-16. The active runtime is `59f3d8340f868d4a`.
+Implementation branch `codex/task-workspace-design` started at `40c8d22` and was integrated into local `main` through `6ad4705` on 2026-10-16; product code was verified through `63e8452`. The approved [design](../superpowers/specs/2026-10-15-task-lifecycle-workspaces-design.md) and [plan](../superpowers/plans/2026-10-15-task-lifecycle-workspaces.md) govern this candidate. Installation and disposable live acceptance completed on 2026-10-16. The active runtime is `59f3d8340f868d4a`.
 
 ## Verification
 
@@ -138,4 +138,4 @@ systemctl --user restart solace-core.service
 
 These rollback commands are recorded, **not executed**. The installer script is pinned read-only in the closeout evidence archive so source-worktree cleanup cannot break rollback. The socket was enabled before installation and remains enabled. Runtime rollback preserves stores and never downgrades databases; the older runtime refuses schema-2 catalogs, whose task/workspace references remain intact and need a compatible runtime. No existing user project was migrated; only disposable acceptance stores were created/upgraded.
 
-Installation and installed acceptance are complete. No merge to `main` or remote publication occurred. Branch `codex/task-workspace-design` and its isolated worktree are preserved.
+Installation and installed acceptance are complete. Local `main` was fast-forwarded through `6ad4705` and all 192 tests passed again on the merged tree. The merged feature branch/worktree were retired after pinning the rollback script outside the worktree. No remote publication occurred. See the [main closeout record](2026-10-16-task-workspaces-main-closeout.md).

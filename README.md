@@ -19,7 +19,7 @@ The core uses a private per-user Unix socket. It opens no network listener and d
 | --- | --- |
 | Registration, checkpoints, recovery, installation | [Local core](docs/local-core.md) |
 | Parent/child tasks, workspaces, prompts, ready results | [Task and workspace workflow](docs/task-workspaces.md) |
-| Current verification, installed acceptance and rollback | [Acceptance report](docs/engineering/2026-10-15-task-workspaces-review-and-acceptance.md) |
+| Current verification, installed acceptance and rollback | [Acceptance report](docs/engineering/2026-10-15-task-workspaces-review-and-acceptance.md), [main closeout](docs/engineering/2026-10-16-task-workspaces-main-closeout.md) |
 | Product architecture and delivery order | [Local-first version engine](docs/specs/local-first-agent-version-engine.md) |
 | Deferred capabilities and prerequisites | [Follow-up register](docs/engineering/2026-10-09-review-findings-and-follow-ups.md) |
 | Existing backup GUI, jobs and ZIP-based vault | [Legacy quick reference](USER_QUICK_REF.md) |
