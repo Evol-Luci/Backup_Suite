@@ -26,15 +26,15 @@ This register consolidates the final whole-branch review, the scoped fix review,
 - Object and shard directory entries are synced through their parent directories before checkpoint metadata can be committed.
 - Other reviewed fixes cover no-follow descriptor-relative traversal, symlink/FIFO replacement races, multi-chunk verification, rollback after partial database inserts, staged restore, concurrent destination creation, and interrupted object writes.
 
-## Deferred system work
+## System work and follow-ups (updated 2026-10-16)
 
 These items are part of the intended Solace product direction, but are outside the first checkpoint-engine slice:
 
 | Area | Work still needed |
 |---|---|
-| Local core | **Implemented and tested in `codex/local-core-design`, 2026-10-13:** private socket, registry, lifecycle/recovery, events, CLI, and local-store checks. Live user-manager installation/activation remains pending. |
-| Agent task flow | Parent/child tasks, isolated workspaces, task state/events, prompt retention/deletion policy, per-task and per-project automatic integration settings, and review gates. Solace manages work; Codex and Claude execute prompts. |
-| Human/agent interaction | CLI/API as the canonical control surface, terminal-friendly review/gate actions, and GUI status for prompts and concurrent agent work. |
+| Local core | **Installed and live-verified:** private socket, registry, lifecycle/recovery, events, CLI and local-store checks. [Current acceptance](2026-10-15-task-workspaces-review-and-acceptance.md). |
+| Agent task flow | **Installed:** parent/direct-child records, isolated workspaces, ready results, task events and logical prompt retention. **Next:** result integration, checks, review gates and receipts. Automatic integration policy follows a verified manual workflow. |
+| Human/agent interaction | Task CLI/API and terminal status are installed. Integration/review actions need the next subsystem; GUI status follows a stable shared integration API. |
 | Version-control workflows | Understandable merge/conflict explanations, text merge flow, binary previews/locks, and Git import/export without live dual-write synchronization. |
 | Storage lifecycle | Workspace/checkpoint references, retention, conservative garbage collection, local-folder replication, and later encrypted Google Drive storage. |
 | Capture/restore limits | Cross-file application-consistent snapshots are not promised. Restore publication is atomic, but its completed tree is not yet promised durable across sudden power loss. Same-user hostile processes are outside the storage threat model. |
@@ -42,7 +42,7 @@ These items are part of the intended Solace product direction, but are outside t
 
 ## Suggested order
 
-1. Continue with the local core service/project registry, then the agent task lifecycle and CLI/GUI review surfaces. The implementation plan is [`../superpowers/plans/2026-10-13-local-core-service-registry.md`](../superpowers/plans/2026-10-13-local-core-service-registry.md), implemented and tested; live installation remains pending.
+1. Design result integration, configured checks and manual review through the CLI/API, using the installed exact task baselines and ready results. The [approved architecture](../specs/local-first-agent-version-engine.md) defines the delivery order.
 2. Preserve interactive GUI rendering as a separate verification item; the existing Tk test execution gap is closed.
 
 ## Evidence

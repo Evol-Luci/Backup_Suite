@@ -10,7 +10,7 @@
 
 **Spec:** [Approved subsystem design](../specs/2026-10-15-task-lifecycle-workspaces-design.md).
 
-**Status:** Written plan awaiting user review. No product implementation or installed-runtime changes are authorized by this document alone.
+**Status:** Approved and executed inline; independent review, regression remediation, installation and disposable installed acceptance completed by 2026-10-16. See the [acceptance report](../../engineering/2026-10-15-task-workspaces-review-and-acceptance.md) for the 192-test result, runtime and rollback evidence. Checkboxes below preserve the original execution instructions; the archived execution ledger records completion.
 
 ## Global Constraints
 

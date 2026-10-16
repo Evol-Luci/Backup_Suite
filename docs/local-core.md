@@ -2,9 +2,11 @@
 
 The local core coordinates registrations and checkpoint operations for one Linux user. It uses a private Unix socket, a SQLite user registry, and separate identity-checked project stores. It opens no network port and does not launch agents. Legacy vault commands and scheduled backup jobs retain their existing behavior.
 
-## Task/workspace candidate
+## Installed task and workspace workflow
 
-The reviewed initial core is installed. The next candidate adds revisioned tasks, isolated workspaces, ready results and logical prompt retention; see [task and workspace guidance](task-workspaces.md). Existing stores need explicit core-schema upgrade to use tasks. Runtime rollback preserves databases and cannot downgrade schema 2. This candidate requires independent review and separate installation approval.
+The local core, revisioned parent/child tasks, isolated workspaces, ready results and logical prompt retention are installed and passed live acceptance on 2026-10-16. See [task and workspace guidance](task-workspaces.md) and the [installed acceptance report](engineering/2026-10-15-task-workspaces-review-and-acceptance.md). New stores use core schema 2; existing schema-1 stores need an explicit preview/apply upgrade before using tasks. Runtime rollback preserves databases and cannot downgrade schema 2.
+
+The next subsystem is result integration: compare saved child results with the current parent, resolve conflicts, run configured checks and obtain approval before applying changes. Applying results, integration receipts, automatic integration policy and a GUI for this workflow are not implemented yet.
 
 ## Install preview
 
@@ -15,7 +17,7 @@ Run from this checkout:
 systemd-analyze --user verify /tmp/solace-core-install-preview/solace-core.socket /tmp/solace-core-install-preview/solace-core.service
 ```
 
-Preview prints exact destinations, runtime contents, and activation commands; it does not modify your home directory. This milestone passed subprocess activation tests, isolated installer tests, and 28 acceptance checks through the real systemd user manager on 2026-10-15. See `docs/engineering/2026-10-14-local-core-independent-review-and-acceptance.md` for installation and rollback evidence.
+Preview prints exact destinations, runtime contents, and activation commands; it does not modify your home directory. The initial core passed subprocess activation tests, isolated installer tests and 28 live user-manager checks on 2026-10-15. Task/workspace acceptance and the 192-test suite passed on 2026-10-16. See the [current installed acceptance and rollback report](engineering/2026-10-15-task-workspaces-review-and-acceptance.md); the [initial core report](engineering/2026-10-14-local-core-independent-review-and-acceptance.md) records the earlier installation.
 
 After reviewing the preview and authorizing installation:
 

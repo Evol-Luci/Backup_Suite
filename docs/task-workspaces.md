@@ -1,6 +1,6 @@
 # Tasks and isolated workspaces
 
-This candidate adds parent tasks and direct children to Solace's local core. External tools do the work in separate directories. Solace records requests, exact baselines and immutable ready results. A ready result awaits review/integration; it does not change the original project or combine child files. See the [candidate review and installation gate](engineering/2026-10-15-task-workspaces-review-and-acceptance.md) for verification and review limitations.
+The installed local core supports parent tasks and direct children. External tools do the work in separate directories. Solace records requests, exact baselines and immutable ready results. A ready result awaits review/integration; it does not change the original project or combine child files. See the [review and installed acceptance report](engineering/2026-10-15-task-workspaces-review-and-acceptance.md) for verification and review limitations.
 
 ## Upgrade an existing store
 
