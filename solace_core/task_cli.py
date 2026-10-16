@@ -35,7 +35,9 @@ def add_parsers(commands,project_actions):
     workspace=commands.add_parser('workspace').add_subparsers(dest='action',required=True)
     for action in ('status','checkpoint','relink'):
         p=workspace.add_parser(action);p.add_argument('project');p.add_argument('task');p.add_argument('--wait',action='store_true')
-        if action=='status': p.add_argument('--refresh',action='store_true')
+        if action=='status':
+            p.add_argument('--refresh',action='store_true');p.add_argument('--after',type=int)
+            p.add_argument('--limit',type=int);p.add_argument('--observation')
         else: p.add_argument('--revision',type=int)
         if action=='checkpoint':p.add_argument('message')
         if action=='relink':
@@ -119,7 +121,10 @@ def prepare(client,args,project,request_id=None):
             elif args.parent_revision is not None: raise invalid('A root task has no parent revision.')
             if args.from_checkpoint:params['from_checkpoint']=args.from_checkpoint
         if method=='task.block':params['reason']=args.reason
-        if method=='workspace.status':params['refresh']=args.refresh
+        if method=='workspace.status':
+            params['refresh']=args.refresh
+            for key in ('after','limit','observation'):
+                if getattr(args,key) is not None:params[key]=getattr(args,key)
         if method=='workspace.checkpoint':params['message']=args.message
         if method=='workspace.relink':params.update(path=str(Path(args.path).absolute()),confirmed_path=args.confirm_path,checkpoint=args.checkpoint,writers_paused=args.writers_paused)
     return method,params

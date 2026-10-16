@@ -81,6 +81,7 @@ class WorkspacePaths:
         self.validate(root,creating=True)
         final=root/project_id/task_id
         self.validate(final,creating=True)
+        self.assert_unowned(final)
         if os.path.lexists(final): raise FileExistsError(str(final))
         return dict(final_path=str(final),staging_path=str(final.parent/('.staging-'+operation_id)))
 
@@ -117,17 +118,17 @@ class WorkspacePaths:
                 try: os.mkdir(name,mode=0o700,dir_fd=fd)
                 except FileExistsError: pass
                 child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+                os.fsync(fd)  # Persist the entry in the directory that received mkdir.
                 os.close(fd);fd=child
             os.fsync(fd)
         finally: os.close(fd)
         return self.validate(final.parent)
 
-    def guard_source(self,root,project_id=None,candidate=None):
-        root=Path(root).resolve()
-        managed=[self.config.workspace_root,self.registry.path.parent/'projects']
-        # Include tracked paths after configuration changes as well.
+    def managed_locations(self,project_id=None,candidate=None):
+        """Read authoritative retained catalogs; fail closed if ownership is unknown."""
         from .catalog import ProjectCatalog,readonly_database
-        for record in self.registry.list():
+        locations=[]
+        for record in self.registry.known_registrations():
             if candidate is not None and record['id']==project_id: record=candidate
             catalog=ProjectCatalog(record,self.policy)
             try:
@@ -135,15 +136,39 @@ class WorkspacePaths:
                 with readonly_database(catalog.database) as db:
                     version=db.execute('SELECT schema_version FROM core_metadata').fetchone()[0]
                     if version==2:
-                        managed += [Path(r[0]) for r in db.execute('SELECT path FROM workspaces')]
-            except (CoreError,OSError):
-                # Known roots/stores still remain protected; unavailable stores
-                # cannot supply new arbitrary paths to register safely.
-                if not record.get('available',True):
-                    raise CoreError('STORE_UNAVAILABLE','A registered store is unavailable for placement checks.','Reconnect or relink it before registering another source.')
-            if record['id']!=project_id: managed.append(Path(record['store']))
+                        locations += [(Path(r[0]),r[1]) for r in db.execute('SELECT path,id FROM workspaces')]
+                        for r in db.execute('SELECT staging_path,final_path,workspace_id,phase FROM workspace_intents'):
+                            locations += [(Path(path),r[2]) for path in r[:2]
+                                          if path and (r[3]!='abandoned' or os.path.lexists(path))]
+            except (CoreError,OSError) as error:
+                raise CoreError('STORE_UNAVAILABLE','A retained catalog is unavailable for placement checks.',
+                                'Reconnect its recorded store, or relink it if still registered, before reserving new locations.') from error
+            locations.append((Path(record['store']),None))
+        return locations
+
+    def assert_unowned(self,path,workspace_id=None):
+        canonical=Path(path).resolve()
+        if any(overlap(canonical,owned.resolve()) for owned,owner in self.managed_locations()
+               if workspace_id is None or owner!=workspace_id):
+            raise CoreError('UNSUPPORTED_STORAGE','The destination overlaps retained Solace data.',
+                            'Choose a separate directory owned only by this workspace.')
+
+    def guard_source(self,root,project_id=None,candidate=None):
+        root=Path(root).resolve()
+        managed=[self.config.workspace_root,self.registry.path.parent/'projects']
+        managed += [path for path,owner in self.managed_locations(project_id,candidate)
+                    if not (candidate and owner is None and path==Path(candidate['store']))]
         if any(overlap(root,path) for path in managed):
             raise CoreError('UNSUPPORTED_STORAGE','The source overlaps Solace workspace or store data.','Choose a separate source directory.')
+
+    def guard_store(self,store,project_id=None,candidate=None):
+        store=Path(store).resolve()
+        managed=[self.config.workspace_root]
+        managed += [path for path,owner in self.managed_locations(project_id,candidate)
+                    if not (candidate and owner is None and path==Path(candidate['store']))]
+        if any(overlap(store,path.resolve()) for path in managed):
+            raise CoreError('UNSUPPORTED_STORAGE','The store overlaps retained workspace or store data.',
+                            'Choose separate local storage outside all workspaces.')
 
 
 def protected_excluder(root,profile,owned_roots):

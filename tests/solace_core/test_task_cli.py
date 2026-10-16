@@ -10,6 +10,44 @@ from task_fixture import TaskCase
 from solace_core.server import SocketServer,bind_private_socket
 
 class TaskCLITests(TaskCase):
+    def test_oversized_response_preserves_request_correlation(self):
+        from solace_core.client import CoreClient
+        from solace_core.protocol import MAX_FRAME
+        with patch.object(self.service,'_dispatch',return_value={'oversized':'x'*MAX_FRAME}):
+            value=CoreClient(self.path).request('core.status',{})
+        self.assertEqual(value['error']['code'],'RESPONSE_TOO_LARGE',value)
+
+    def test_large_observation_stays_readable_and_all_changes_can_be_paged(self):
+        from solace_core.client import CoreClient
+        client=CoreClient(self.path)
+        task=self.create_task();workspace=Path(self.start(task)['path'])
+        names=[str(i).zfill(5)+'x'*180 for i in range(6000)]
+        for name in names:(workspace/name).touch()
+        operation=self.call('workspace.status',project=self.project,task=task,refresh=True)['operation_id']
+        self.assertEqual(self.wait_operation(operation)['state'],'succeeded')
+        for method,params in [('operation.show',dict(operation=operation)),('task.show',dict(task=task)),('workspace.status',dict(task=task))]:
+            value=client.request(method,dict(project=self.project,**params))
+            self.assertTrue(value['ok'],value)
+        view=client.request('task.show',dict(project=self.project,task=task))['result']
+        self.assertEqual(view['workspace']['last_observed']['counts']['added'],6000)
+        seen=[];cursor=0;token=None
+        while True:
+            params=dict(project=self.project,task=task,after=cursor,limit=128)
+            if token:params['observation']=token
+            result=client.request('workspace.status',params);self.assertTrue(result['ok'],result)
+            page=result['result']['changes'];token=page['observation']
+            seen += [row['path'] for row in page['entries'] if row['kind']=='added']
+            cursor=page['next_after']
+            if cursor is None:break
+        self.assertEqual(seen,names)
+        # Revision inference and a new operation must remain usable after refresh.
+        self.result('task','block',self.project,task,'--reason','large tree still manageable')
+        ready=self.result('task','ready',self.project,task,'--wait');self.assertEqual(ready['state'],'succeeded')
+        workspace.joinpath('new').touch()
+        self.wait_operation(self.call('workspace.status',project=self.project,task=task,refresh=True)['operation_id'])
+        stale=client.request('workspace.status',dict(project=self.project,task=task,after=128,observation=token))
+        self.assertEqual(stale['error']['code'],'OBSERVATION_CHANGED')
+
     def setUp(self):
         super().setUp();self.path=self.base/'core.sock'
         self.listener=bind_private_socket(self.path,self.base);self.server=SocketServer(self.listener,self.service)

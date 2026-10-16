@@ -22,6 +22,7 @@ class CoreService:
         self.config=config or CoreConfig.load(data)
         self.workspace_paths=WorkspacePaths(registry,self.config,registry.policy)
         registry.workspace_guard=self.workspace_paths.guard_source
+        registry.workspace_store_guard=self.workspace_paths.guard_store
         self._closed = False
         self.maintenance = None
         self._guard = threading.RLock()
@@ -78,6 +79,7 @@ class CoreService:
 
     def _recover_pending(self, project, catalog):
         if project in self._pending_recovery:
+            self._reconcile_location(catalog)
             ids = catalog.recover_interrupted()
             self._pending_recovery.discard(project)
             self.recovery[:] = [row for row in self.recovery if not (row.get('project') == project and 'error' in row)]
@@ -96,7 +98,23 @@ class CoreService:
             self._recover_pending(project, catalog)
             return catalog, False
 
-    def _rebase_recovery(self,catalog,previous):
+    def _reconcile_location(self,catalog):
+        """Complete the latest explicit registry hand-off, including after a crash."""
+        import json
+        from .schema import schema_version
+        if schema_version(catalog)!=2: return
+        with self.registry.connect() as db:
+            receipts=[(row[0],json.loads(row[1])) for row in db.execute('SELECT id,response_json FROM requests ORDER BY rowid DESC')]
+        for request_id,value in receipts:
+            if (value.get('id')!=catalog.registration['id'] or 'previous_location' not in value): continue
+            if any(value[key]!=catalog.registration[key] for key in ('root','store')): return
+            with catalog.connect() as db:
+                done=any(json.loads(row[0]).get('request_id')==request_id for row in db.execute(
+                    "SELECT details_json FROM events WHERE kind='project.location.reconciled'"))
+            if not done: self._rebase_recovery(catalog,value['previous_location'],request_id)
+            return
+
+    def _rebase_recovery(self,catalog,previous,request_id):
         from .schema import schema_version
         from .workspace_paths import directory_identity
         import json
@@ -136,6 +154,7 @@ class CoreService:
                         old=db.execute('SELECT params_json FROM operations WHERE id=?',(operation,)).fetchone()
                         params=json.loads(old[0]);params.update(context)
                         db.execute('UPDATE operations SET params_json=? WHERE id=?',(json.dumps(params),operation))
+            catalog._event(db,dict(id=None,actor='core'),'project.location.reconciled','succeeded',dict(request_id=request_id))
 
     def handle(self, request):
         request_id = request.get('id') if isinstance(request, dict) else None
@@ -171,8 +190,12 @@ class CoreService:
                     receipt_params.update(root=str(Path(p['root']).resolve()),store=str(Path(p['store']).resolve()),confirmed_root=p['confirmed_root'])
                 with self.registry.connect() as db:
                     receipt=self.registry._receipt(db,reqid,fingerprint(method,receipt_params,actor))
-                if receipt is not None: return receipt
-                previous_registration=self.registry.get(project)
+                if receipt is not None:
+                    if method=='project.relink':
+                        try: self.catalog(project)
+                        except CoreError: pass  # Stable receipt; pending reconciliation still gates new work.
+                    return receipt
+                self.registry.get(project)
                 try:
                     current = self.catalog(project)
                 except Exception as error:
@@ -195,10 +218,9 @@ class CoreService:
                                 if db.execute('SELECT 1 FROM task_claims LIMIT 1').fetchone():
                                     raise CoreError('TASK_BUSY','Workspace recovery still owns this project.','Resolve or abandon it before relocating available storage.')
                     result = self.registry.relink(project, Path(p['root']), Path(p['store']), p['confirmed_root'], reqid, actor)
+                    self._pending_recovery.add(project)
                     try:
-                        recovered=self.catalog(project)
-                        self._rebase_recovery(recovered,previous_registration)  # Explicit validated location change.
-                        self.catalog(project)  # Reconcile a previously unavailable store at its validated new path.
+                        self.catalog(project)
                     except Exception as error:
                         self.recovery.append(dict(project=project, error=classify(error).as_dict()))
                     return result
@@ -222,6 +244,11 @@ class CoreService:
             with coordinator.lock:
                 catalog,registered=self._receipt_catalog(project)
                 if method=='project.upgrade':
+                    if not p['preview']:
+                        from .schema import schema_version
+                        if schema_version(catalog)==2:
+                            with catalog.connect() as db: cached=TaskCatalog(catalog).lookup_request(request,db)
+                            if cached is not None: return cached
                     if not registered: raise CoreError('PROJECT_NOT_FOUND','The project is no longer registered.','Register it before upgrading.')
                     return preview_upgrade(catalog) if p['preview'] else apply_upgrade(catalog,p.get('plan_token'),request)
                 require_tasks(catalog);tasks=TaskCatalog(catalog);prompts=PromptStore(catalog)
@@ -231,7 +258,13 @@ class CoreService:
                 if method=='task.prompt.show': return prompts.read(p['task'])
                 if method=='project.prompt-policy.show': return prompts.policy()
                 if method=='workspace.status' and not p.get('refresh',False):
-                    return dict(task_id=p['task'],workspace=tasks.show(p['task'])['workspace'])
+                    import json
+                    from .observations import change_page
+                    with catalog.connect() as db:
+                        row=db.execute('SELECT observed_json FROM workspaces WHERE task_id=?',(p['task'],)).fetchone()
+                    report=json.loads(row[0]) if row and row[0] else None
+                    return dict(task_id=p['task'],workspace=tasks.show(p['task'])['workspace'],
+                                changes=change_page(report,p.get('after',0),p.get('limit',128),p.get('observation')))
                 with catalog.connect() as db: cached=tasks.lookup_request(request,db)
                 if cached is not None: return cached
                 if not registered: raise CoreError('PROJECT_NOT_FOUND','The project is no longer registered.','Retained records are read-only.')

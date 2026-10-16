@@ -49,11 +49,18 @@ class ProtocolTests(unittest.TestCase):
           ('workspace.staging.cleanup',dict(project=P,operation=OP,preview=True,plan_token='f'*64)),
           ('workspace.relink',dict(VALID['workspace.relink'],writers_paused=False)),
           ('workspace.relink',dict(VALID['workspace.relink'],path='relative')),
+          ('workspace.status',dict(project=P,task=T,refresh=True,limit=10)),
+          ('workspace.status',dict(project=P,task=T,after=1)),
+          ('workspace.status',dict(project=P,task=T,observation='invalid')),
+          ('workspace.status',dict(project=P,task=T,limit=True)),
+          ('workspace.status',dict(project=P,task=T,limit=257)),
+          ('workspace.status',dict(project=P,task=T,limit=0)),
           ('project.prompt-policy.set',dict(project=P,policy='days',days=True,expected_revision=1)),
           ('project.prompt-policy.set',dict(project=P,policy='days',days=10**100,expected_revision=1)),
           ('project.prompt-policy.set',dict(project=P,policy='retain',days=1,expected_revision=1))]
         for method,params in invalid:
             with self.subTest(method=method,keys=list(params)),self.assertRaises(CoreError): validate_request(self.request(method,params))
+        validate_request(self.request('workspace.status',dict(project=P,task=T,after=128,limit=256,observation='a'*64)))
         for value in [None,True,0,-1,'1']:
             with self.subTest(value=value),self.assertRaises(CoreError):
                 validate_request(self.request('task.ready',dict(project=P,task=T,expected_revision=value)))

@@ -52,7 +52,7 @@ class TaskOperations:
         require_tasks(self.catalog)
         if request['method']=='workspace.recovery.resume': return self.accept_resume(request)
         p=request['params'];method=request['method'];task_id=p['task']
-        with self.catalog.connect(write=True) as db:
+        with self.paths.registry.lock,self.catalog.connect(write=True) as db:
             cached=self.tasks.lookup_request(request,db)
             if cached is not None: return cached
             task=self.tasks.row(db,task_id)
@@ -91,6 +91,9 @@ class TaskOperations:
                     raise CoreError('CONFIRMATION_REQUIRED','Confirm the exact candidate path and that writers are paused.','Pause external writers and confirm the canonical path.')
                 reference=db.execute('SELECT 1 FROM task_checkpoint_refs WHERE task_id=? AND checkpoint_id=?',(task_id,p['checkpoint'])).fetchone()
                 if reference is None: raise CoreError('BASELINE_INELIGIBLE','The comparison checkpoint is not in this task history.','Select one of this task’s saved checkpoints.')
+                self.paths.assert_unowned(candidate,workspace['id'])
+                from .workspace_trees import validate_private_files
+                validate_private_files(candidate)
                 context.update(workspace=workspace,candidate_identity=self.paths.validate(candidate),
                                relink_checkpoint=p['checkpoint'],writers_paused=True)
             else:
@@ -99,6 +102,9 @@ class TaskOperations:
                 context['workspace']=workspace
                 if method=='task.ready': self.children_ready(db,task_id)
             operation=uuid.uuid4().hex;now=self.catalog._now()
+            # Observations are read models, never recovery preconditions.
+            for key in ('workspace','parent_workspace'):
+                if key in context:context[key]={k:v for k,v in context[key].items() if k!='observed_json'}
             db.execute('INSERT INTO operations VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                 (operation,request['id'],fingerprint(method,p,request['actor']),method,request['actor'],'queued',now,now,None,None,json.dumps(context)))
             self.tasks.claim(db,operation,revisions)
@@ -268,7 +274,8 @@ class TaskOperations:
         with self.coordinator.lock,self.catalog.connect(write=True) as db:
             self.check(db,operation,context);self.workspace(db,context['task'])
             db.execute('UPDATE workspaces SET observed_at=?,observed_json=? WHERE id=?',(report['observed_at'],json.dumps(report),workspace['id']))
-            self.catalog._transition(db,operation,'succeeded',result=report,kind='workspace.observed');self.tasks.release(db,operation)
+            from .observations import summary
+            self.catalog._transition(db,operation,'succeeded',result=summary(report),kind='workspace.observed');self.tasks.release(db,operation)
         self.catalog.notify()
 
     def recover_interrupted(self):
@@ -398,9 +405,10 @@ class TaskOperations:
         self.catalog.notify();return result
 
     def finish_relink(self,operation,intent):
-        from .workspace_trees import validate_workspace_links
+        from .workspace_trees import validate_workspace_links,validate_private_files
         context=json.loads(intent['expected_json']);identity=context['candidate_identity']
         self.paths.validate(Path(identity['path']),expected=identity)
+        validate_private_files(Path(identity['path']))
         repo=ProjectRepository.open_existing(Path(identity['path']),self.catalog.store)
         # Validate candidate symlink text without checkpointing or following it.
         entries,warnings=repo.inspect_tree(context['profile']['exclusions'],excluded=protected_excluder(repo.project_root,context['profile'],[self.catalog.store]))
@@ -414,7 +422,8 @@ class TaskOperations:
                 (identity['path'],identity['mount_id'],identity['device'],identity['inode'],comparison['observed_at'],json.dumps(comparison),intent['workspace_id']))
             db.execute('UPDATE tasks SET revision=?,updated_at=? WHERE id=?',(revision,self.catalog._now(),context['task']))
             db.execute("UPDATE workspace_intents SET phase='committed' WHERE operation_id=?",(intent['operation_id'],))
-            self.catalog._transition(db,operation,'succeeded',result=dict(task_id=context['task'],workspace_id=intent['workspace_id'],path=identity['path'],revision=revision,comparison=comparison),kind='workspace.relinked')
+            from .observations import summary
+            self.catalog._transition(db,operation,'succeeded',result=dict(task_id=context['task'],workspace_id=intent['workspace_id'],path=identity['path'],revision=revision,comparison=summary(comparison)),kind='workspace.relinked')
             self.tasks.release(db,operation)
         self.catalog.notify()
 

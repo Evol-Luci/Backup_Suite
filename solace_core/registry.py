@@ -128,6 +128,18 @@ class Registry:
         raise CoreError('PROJECT_NOT_FOUND', 'No retained project location is available.',
                         'Use a registered project or preserve its original store for recovery.')
 
+    def known_registrations(self):
+        """Latest known location, including catalogs retained after unregister."""
+        keys=('id','root','store','store_uuid','mount_id','created_at')
+        records={}
+        with self.connect() as db:
+            for row in db.execute('SELECT response_json FROM requests ORDER BY rowid'):
+                value=json.loads(row[0])
+                if all(key in value for key in keys):
+                    records[value['id']]={key:value[key] for key in keys}
+            for row in db.execute('SELECT * FROM projects'): records[row['id']]=dict(row)
+        return list(records.values())
+
     def _available(self, record):
         result = dict(record)
         try:
@@ -184,6 +196,7 @@ class Registry:
                 self.projects.mkdir(mode=0o700, exist_ok=True)
                 store = self.projects / project_id
             store = Path(store).resolve()
+            if getattr(self,'workspace_store_guard',None): self.workspace_store_guard(store)
             location = self.policy.check(store, creating=True)
             if store == root or root.is_relative_to(store):
                 raise CoreError('UNSUPPORTED_STORAGE', 'The store cannot contain the source.', 'Choose separate directories.')
@@ -240,11 +253,15 @@ class Registry:
             if confirmed_root != str(root):
                 raise CoreError('CONFIRMATION_REQUIRED', 'Confirm the selected canonical source root.', f'Confirm this source root: {root}')
             record = self.get(project_id)
+            previous_location=dict(root=record['root'],store=record['store'])
             location = self.policy.check(store)
             record.update(root=str(root), store=str(store), mount_id=location.mount_id)
             ProjectCatalog(record, self.policy).validate()
             if getattr(self,'workspace_guard',None): self.workspace_guard(root,project_id,record)
-            result = dict(record, available=True)
+            if getattr(self,'workspace_store_guard',None): self.workspace_store_guard(store,project_id,record)
+            # This receipt is also the durable hand-off to catalog reconciliation.
+            # Commit it with the new registration, before touching the other DB.
+            result = dict(record, available=True, previous_location=previous_location)
             with self.connect(write=True) as db:
                 try:
                     db.execute('UPDATE projects SET root=?,store=?,mount_id=? WHERE id=?', (str(root),str(store),location.mount_id,project_id))

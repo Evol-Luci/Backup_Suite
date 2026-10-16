@@ -35,6 +35,7 @@ import json
 import os
 import stat
 import uuid
+from contextlib import contextmanager
 from .errors import CoreError
 from .workspace_paths import directory_identity
 from solace_engine.errors import CorruptObject
@@ -107,23 +108,58 @@ def _verify_tree(repo,checkpoint,path,*,sealed=False):
             raise CorruptObject('materialized file content differs')
         if e.kind=='file' and actual.mode!=mode: raise CorruptObject('materialized file mode differs')
     if sealed:
-        for directory,children,files in os.walk(path,followlinks=False):
-            if Path(directory).stat().st_mode & 0o777 != 0o500: raise CorruptObject('cache directory mode changed')
+        with tree_directory(path) as fd:
+            _sync_tree(fd,check_sealed=True)
     return sum(e.size for e in expected)
 
 
-def _private_directories(path):
-    """Never follow a substituted directory component while creating parents."""
+@contextmanager
+def tree_directory(path,*,create=False,root_fd=None):
+    """Hold every traversal to a real directory; callers operate on the fd."""
     path=Path(path)
-    fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY)
+    if root_fd is None:
+        if not path.is_absolute(): raise ValueError('absolute tree root required')
+        fd=os.open('/',os.O_RDONLY|os.O_DIRECTORY);parts=path.parts[1:]
+    else:
+        if path.is_absolute() or '..' in path.parts: raise ValueError('relative tree path required')
+        fd=os.dup(root_fd);parts=path.parts
     try:
-        for component in path.parts[1:]:
-            try: os.mkdir(component,mode=0o700,dir_fd=fd)
-            except FileExistsError: pass
+        for component in parts:
+            if create:
+                try:
+                    os.mkdir(component,mode=0o700,dir_fd=fd);os.fsync(fd)
+                except FileExistsError: pass
             child=os.open(component,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
-            os.fsync(fd);os.close(fd);fd=child
-        os.fsync(fd)
+            os.close(fd);fd=child
+        yield fd
     finally: os.close(fd)
+
+
+def _private_directories(path):
+    with tree_directory(path,create=True) as fd: os.fsync(fd)
+
+
+def _sync_tree(fd,*,seal=False,check_sealed=False,reject_hardlinks=False):
+    """Never chmod, read or sync a pathname through a mutable ancestor."""
+    os.lseek(fd,0,os.SEEK_SET)
+    for name in os.listdir(fd):
+        meta=os.stat(name,dir_fd=fd,follow_symlinks=False)
+        if stat.S_ISDIR(meta.st_mode):
+            child=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+            try:
+                if not os.path.samestat(meta,os.fstat(child)): raise CorruptObject('tree directory changed')
+                _sync_tree(child,seal=seal,check_sealed=check_sealed,reject_hardlinks=reject_hardlinks)
+            finally: os.close(child)
+        elif reject_hardlinks and stat.S_ISREG(meta.st_mode) and meta.st_nlink!=1:
+            raise CoreError('UNSUPPORTED_STORAGE','A relink candidate contains shared mutable file inodes.',
+                            'Copy the candidate into independent files before relinking.')
+    if seal: os.fchmod(fd,0o500)
+    if check_sealed and stat.S_IMODE(os.fstat(fd).st_mode)!=0o500: raise CorruptObject('cache directory mode changed')
+    if not reject_hardlinks and not check_sealed: os.fsync(fd)
+
+
+def validate_private_files(path):
+    with tree_directory(path) as fd: _sync_tree(fd,reject_hardlinks=True)
 
 
 def _rename_noreplace(source_name,destination_name,parent_fd,destination_fd=None):
@@ -167,34 +203,33 @@ class BaseCache:
         parent_identity=directory_identity(parent,self.catalog.policy)
         staging_container=parent/('.stage-'+cache_id);staging=staging_container/'tree'
         container=parent/cache_id;final=container/'tree'
-        parent_fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-        try:
+        with tree_directory(parent) as parent_fd:
             os.mkdir(staging_container.name,mode=0o700,dir_fd=parent_fd)
-            os.mkdir(staging,mode=0o700)
-            for entry in entries:
-                target=staging.joinpath(*entry.path.split('/'));_private_directories(target.parent)
-                if entry.kind=='symlink': os.symlink(targets[entry.path].decode('utf-8','surrogateescape'),target)
-                else:
-                    fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-                    try:
-                        for digest in entry.chunk_digests:
-                            data=repo.object_store.read_object(digest);offset=0
-                            while offset<len(data): offset+=os.write(fd,data[offset:])
-                        os.fchmod(fd,entry.mode);os.fsync(fd)
-                    finally: os.close(fd)
-            _verify_tree(repo,checkpoint,staging)
-            for entry in entries:
-                if entry.kind=='file': (staging/entry.path).chmod(entry.mode & ~0o222)
-            for directory,children,files in os.walk(staging,topdown=False,followlinks=False):
-                Path(directory).chmod(0o500)
-                ObjectStore._sync_directories((Path(directory),))
+            with tree_directory(staging_container.name,root_fd=parent_fd) as container_fd:
+                os.mkdir('tree',mode=0o700,dir_fd=container_fd)
+                with tree_directory('tree',root_fd=container_fd) as tree_fd:
+                    staging_meta=os.fstat(tree_fd)
+                    for entry in entries:
+                        relative=Path(entry.path)
+                        with tree_directory(relative.parent,create=True,root_fd=tree_fd) as entry_fd:
+                            if entry.kind=='symlink': os.symlink(targets[entry.path].decode('utf-8','surrogateescape'),relative.name,dir_fd=entry_fd)
+                            else:
+                                fd=os.open(relative.name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=entry_fd)
+                                try:
+                                    for digest in entry.chunk_digests:
+                                        data=repo.object_store.read_object(digest);offset=0
+                                        while offset<len(data): offset+=os.write(fd,data[offset:])
+                                    os.fchmod(fd,entry.mode & ~0o222);os.fsync(fd)
+                                finally: os.close(fd)
+                    _sync_tree(tree_fd,seal=True)
+                os.fsync(container_fd)
             _verify_tree(repo,checkpoint,staging,sealed=True)
             self.catalog.validate(require_root=False)
             if directory_identity(parent,self.catalog.policy)!=parent_identity: raise CorruptObject('cache parent changed')
-            ObjectStore._sync_directories((staging_container,))
             _rename_noreplace(staging_container.name,container.name,parent_fd)
-        finally: os.close(parent_fd)
         identity=directory_identity(final,self.catalog.policy)
+        if (identity['device'],identity['inode'])!=(staging_meta.st_dev,staging_meta.st_ino):
+            raise CorruptObject('published cache identity changed')
         result=dict(cache_id=cache_id,path=str(final),identity=identity,manifest_sha256=manifest,
                     logical_bytes=sum(e.size for e in entries))
         with self.catalog.connect(write=True) as db:
@@ -222,21 +257,30 @@ class WorkspaceBuilder:
             with self.catalog.connect(write=True) as db:
                 changed=db.execute('UPDATE workspace_intents SET staging_identity_json=? WHERE operation_id=? AND phase=\'reserved\'',(json.dumps(identity),intent['operation_id'])).rowcount
                 if changed!=1: raise CoreError('RECOVERY_REQUIRED','The preparation has no matching reserved intent.','Inspect its operation.')
-            for entry in entries:
-                target=staging/entry.path;_private_directories(target.parent)
-                if entry.kind=='symlink': os.symlink(targets[entry.path].decode('utf-8','surrogateescape'),target)
-                else:
-                    source_fd=os.open(Path(cache['path'])/entry.path,os.O_RDONLY|os.O_NOFOLLOW)
-                    try:
-                        destination_fd=os.open(target,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-                        try:
-                            clone_regular(source_fd,destination_fd)
-                            os.fchmod(destination_fd,entry.mode);os.fsync(destination_fd)
-                        finally: os.close(destination_fd)
-                    finally: os.close(source_fd)
+            with tree_directory(staging.name,root_fd=parent_fd) as tree_fd,tree_directory(cache['path']) as cache_fd:
+                if (os.fstat(tree_fd).st_dev,os.fstat(tree_fd).st_ino)!=(identity['device'],identity['inode']):
+                    raise CorruptObject('staging directory changed')
+                if (os.fstat(cache_fd).st_dev,os.fstat(cache_fd).st_ino)!=(cache['identity']['device'],cache['identity']['inode']):
+                    raise CorruptObject('cache directory changed')
+                for entry in entries:
+                    relative=Path(entry.path)
+                    with tree_directory(relative.parent,create=True,root_fd=tree_fd) as entry_fd:
+                        if entry.kind=='symlink': os.symlink(targets[entry.path].decode('utf-8','surrogateescape'),relative.name,dir_fd=entry_fd)
+                        else:
+                            with tree_directory(relative.parent,root_fd=cache_fd) as source_parent:
+                                source_fd=os.open(relative.name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=source_parent)
+                            try:
+                                source_meta=os.fstat(source_fd)
+                                if not stat.S_ISREG(source_meta.st_mode) or source_meta.st_nlink!=1:
+                                    raise CorruptObject('cache file is not an independent regular inode')
+                                destination_fd=os.open(relative.name,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=entry_fd)
+                                try:
+                                    clone_regular(source_fd,destination_fd)
+                                    os.fchmod(destination_fd,entry.mode);os.fsync(destination_fd)
+                                finally: os.close(destination_fd)
+                            finally: os.close(source_fd)
+                _sync_tree(tree_fd)
             _verify_tree(repo,checkpoint,staging)
-            for directory,children,files in os.walk(staging,topdown=False,followlinks=False):
-                ObjectStore._sync_directories((Path(directory),))
             with self.catalog.connect(write=True) as db:
                 db.execute("UPDATE workspace_intents SET phase='staged' WHERE operation_id=?",(intent['operation_id'],))
         return dict(identity=identity,manifest_sha256=cache['manifest_sha256'],checkpoint_id=checkpoint)

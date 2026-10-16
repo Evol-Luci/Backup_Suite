@@ -148,6 +148,8 @@ class TaskCatalog:
                     available=all(current[k]==w[k] for k in ('path','mount_id','device','inode'))
                 except (OSError,CoreError): available=False
                 observation=json.loads(w['observed_json']) if w['observed_json'] else None
+                from .observations import summary
+                observation=summary(observation)
                 if observation: observation['stale']=observation['checkpoint_id']!=w['head_checkpoint']
                 task['workspace']=dict(id=w['id'],path=w['path'] if available else None,
                     base_checkpoint=w['base_checkpoint'],head_checkpoint=w['head_checkpoint'],

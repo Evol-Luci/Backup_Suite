@@ -8,6 +8,26 @@ from task_fixture import TaskCase
 from solace_core.service import CoreService
 
 class RecoveryTests(TaskCase):
+    def test_project_relink_crash_reconciles_durably_before_recovery_and_replay(self):
+        (self.root/'file').write_text('baseline')
+        task=self.create_task();start_request=self.crash(task,'after_stage')
+        original=Path(self.registry.get(self.project)['store']);moved=original.with_name('moved-store');original.rename(moved)
+        request_id=str(uuid.uuid4())
+        worker=Path(__file__).with_name('relink_crash_worker.py')
+        crashed=subprocess.run([sys.executable,str(worker),str(self.registry.path),self.project,
+            str(self.root),str(moved),str(self.config.workspace_root),request_id],capture_output=True,timeout=18)
+        self.assertEqual(crashed.returncode,88,crashed.stderr.decode())
+        self.reopen();operation=self.operation(start_request)
+        resumed=self.recover(operation,task)
+        outcome=self.wait_operation(resumed['operation_id']);self.assertEqual(outcome['state'],'succeeded',outcome)
+        args=dict(project=self.project,root=str(self.root),store=str(moved),confirmed_root=str(self.root))
+        first=self.call('project.relink',request_id,**args);self.assertEqual(self.call('project.relink',request_id,**args),first)
+        catalog=self.service.catalog(self.project)
+        with catalog.connect() as db:
+            caches=[r[0] for r in db.execute('SELECT path FROM workspace_caches')]
+        self.assertTrue(caches);self.assertTrue(all(Path(p).is_relative_to(moved) and Path(p).exists() for p in caches))
+        self.assertEqual((Path(self.show(task)['workspace']['path'])/'file').read_text(),'baseline')
+
     def crash(self,task,phase):
         request_id=str(uuid.uuid4());self.service.close()
         process=subprocess.run([sys.executable,str(Path(__file__).with_name('task_crash_worker.py')),str(self.registry.path),self.project,task,request_id,phase,str(self.config.workspace_root)],capture_output=True,timeout=18)

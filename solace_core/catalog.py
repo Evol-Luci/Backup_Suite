@@ -192,7 +192,8 @@ class ProjectCatalog:
             encoded = value.pop(source)
             value[target] = json.loads(encoded) if encoded is not None else None
         value.pop('fingerprint', None)
-        return value
+        from .observations import operation_view
+        return operation_view(value)
 
     def get_operation(self, operation_id):
         with self.connect() as db:

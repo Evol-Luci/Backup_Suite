@@ -92,7 +92,13 @@ class SocketServer:
                 except CoreError as error:
                     self._send(connection, response(None, error=error));return
                 result = self.service.handle(request)
-                self._send(connection, result)
+                try:self._send(connection, result)
+                except CoreError as error:
+                    if error.code!='INVALID_REQUEST':raise
+                    self._send(connection,response(request.get('id'),error=CoreError(
+                        'RESPONSE_TOO_LARGE','The response exceeds the protocol frame limit.',
+                        'Use a narrower query or the documented pagination options.')))
+                    return
                 if result['ok'] and request['method'] == 'event.subscribe':
                     self._subscribe(connection, request)
                     return

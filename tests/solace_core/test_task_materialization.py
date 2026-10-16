@@ -10,6 +10,52 @@ from solace_core.tasks import TaskCatalog
 from solace_engine.repository import ProjectRepository
 
 class MaterializationTests(TaskCase):
+    def test_cache_creation_and_reads_never_follow_substituted_parents(self):
+        import solace_core.workspace_trees as trees
+        (self.root/'sub').mkdir();(self.root/'sub/file').write_text('private source')
+        cp=self.fixture();builder=trees.WorkspaceBuilder(self.catalog,self.service.workspace_paths)
+        outside=self.base/'outside';outside.mkdir();(outside/'sentinel').write_text('unrelated bytes')
+        outside_mode=(outside/'sentinel').stat().st_mode
+        original=os.open;swapped=[]
+        def replace_cache_parent(path,flags,*args,**kwargs):
+            if flags & os.O_CREAT and Path(path).name=='file' and not swapped:
+                parent=(Path(os.readlink('/proc/self/fd/'+str(kwargs['dir_fd'])))
+                        if kwargs.get('dir_fd') is not None else Path(path).parent)
+                if '.stage-' in str(parent):
+                    parent.rename(parent.with_name('original-sub'));parent.symlink_to(outside,target_is_directory=True);swapped.append(True)
+            return original(path,flags,*args,**kwargs)
+        from solace_engine.errors import CorruptObject
+        with patch.object(trees.os,'open',side_effect=replace_cache_parent),self.assertRaises((CorruptObject,CoreError,OSError)):
+            trees.BaseCache(self.catalog,self.service.workspace_paths).ensure(self.repo,cp.id)
+        self.assertTrue(swapped);self.assertFalse((outside/'file').exists())
+        self.assertEqual((outside/'sentinel').stat().st_mode,outside_mode)
+        (outside/'file').write_text('unrelated bytes')
+        cache=trees.BaseCache(self.catalog,self.service.workspace_paths).ensure(self.repo,cp.id)
+        intent=self.intent(cp);swapped.clear();cloned=[]
+        original_clone=trees.clone_regular
+        def read_with_swap(path,flags,*args,**kwargs):
+            if Path(path).name=='file' and not flags & os.O_CREAT and not swapped:
+                parent=(Path(os.readlink('/proc/self/fd/'+str(kwargs['dir_fd'])))
+                        if kwargs.get('dir_fd') is not None else Path(path).parent)
+                if str(parent)==str(Path(cache['path'])/'sub'):
+                    Path(cache['path']).chmod(0o700)
+                    parent.rename(parent.with_name('original-sub'));parent.symlink_to(outside,target_is_directory=True);swapped.append(True)
+            return original(path,flags,*args,**kwargs)
+        def clone(source,destination):
+            cloned.append(os.fstat(source).st_ino)
+            self.assertNotEqual(os.fstat(source).st_ino,(outside/'file').stat().st_ino)
+            return original_clone(source,destination)
+        # Arm only after cache verification, immediately before reading its files.
+        original_ensure=trees.BaseCache.ensure
+        def ensure(*args):
+            result=original_ensure(*args)
+            patcher=patch.object(trees.os,'open',side_effect=read_with_swap);patcher.start();self.addCleanup(patcher.stop)
+            return result
+        with patch.object(trees.BaseCache,'ensure',side_effect=lambda *args:ensure(trees.BaseCache(self.catalog,self.service.workspace_paths),*args)),patch.object(trees,'clone_regular',side_effect=clone):
+            builder.prepare(self.repo,cp.id,intent)
+        self.assertTrue(swapped);self.assertTrue(cloned)
+        self.assertEqual((Path(intent['staging_path'])/'sub/file').read_text(),'private source')
+
     def fixture(self):
         (self.root/'big').write_bytes(b'chunked\0'*160000)
         (self.root/'run').write_bytes(b'#!/bin/sh\n');(self.root/'run').chmod(0o755)

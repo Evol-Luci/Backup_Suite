@@ -35,7 +35,7 @@ TASK_PARAMS = {
     'task.ready': ({'project','task','expected_revision'},set()),
     'task.prompt.show': ({'project','task'},set()),
     'task.prompt.delete': ({'project','task','expected_revision'},set()),
-    'workspace.status': ({'project','task'},{'refresh'}),
+    'workspace.status': ({'project','task'},{'refresh','after','limit','observation'}),
     'workspace.recovery.show': ({'project','operation'},set()),
     'workspace.recovery.resume': ({'project','operation','task','expected_revision'},set()),
     'workspace.recovery.abandon': ({'project','operation','task','expected_revision'},set()),
@@ -113,6 +113,8 @@ def validate_request(value):
         elif key == 'after':
             if type(item) is not int or item < 0:
                 raise invalid('The cursor must be a nonnegative integer.')
+        elif key == 'limit':
+            if type(item) is not int or not 1<=item<=256:raise invalid('Page size must be an integer from 1 to 256.')
         elif key == 'exclusions':
             if not isinstance(item, list) or any(not isinstance(x, str) or '\0' in x for x in item):
                 raise invalid('Exclusions must be strings.')
@@ -122,6 +124,13 @@ def validate_request(value):
         if key in params and not Path(params[key]).is_absolute():
             raise invalid('API filesystem paths must be absolute.')
     if method in TASK_PARAMS:
+        if method=='workspace.status':
+            if params.get('refresh') and any(key in params for key in ('after','limit','observation')):
+                raise invalid('Refresh does not accept cached observation paging arguments.')
+            if params.get('after',0)>0 and 'observation' not in params:
+                raise invalid('Subsequent change pages require the observation token.')
+            if 'observation' in params and re.fullmatch(r'[0-9a-f]{64}',params['observation']) is None:
+                raise invalid('Observation tokens must be exact SHA256 hex strings.')
         for key in ('project','task','parent','operation','checkpoint','from_checkpoint'):
             if key in params and re.fullmatch(r'[0-9a-f]{32}',params[key]) is None:
                 raise invalid('Task API identifiers must be exact lowercase UUID hex strings.')

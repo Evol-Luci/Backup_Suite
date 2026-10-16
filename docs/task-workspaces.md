@@ -1,6 +1,6 @@
 # Tasks and isolated workspaces
 
-This candidate adds parent tasks and direct children to Solace's local core. External tools do the work in separate directories. Solace records requests, exact baselines and immutable ready results. A ready result awaits review/integration; it does not change the original project or combine child files. This candidate still requires independent review and installation approval.
+This candidate adds parent tasks and direct children to Solace's local core. External tools do the work in separate directories. Solace records requests, exact baselines and immutable ready results. A ready result awaits review/integration; it does not change the original project or combine child files. See the [candidate review and installation gate](engineering/2026-10-15-task-workspaces-review-and-acceptance.md) for verification and review limitations.
 
 ## Upgrade an existing store
 
@@ -50,11 +50,22 @@ Default paths are `$XDG_DATA_HOME/solace/workspaces/PROJECT_ID/TASK_ID` (`~/.loc
 
 Workspaces must be outside registered source/store trees and Git-controlled ancestors, on supported writable local storage. Known/configured sync roots are refused; arbitrary background sync cannot be detected automatically. Missing or replaced workspaces are unavailable and are never recreated implicitly. Nested source stores remain supported, but cannot contain workspaces.
 
+New source/store locations and workspace reservations also protect retained workspaces and preparations, including other projects and records retained after unregister or a workspace-root configuration change. Placement checks require those retained catalogs to be readable. Reconnect an unavailable recorded store, or explicitly relink its still-registered project, before reserving new locations. Ordinary reads and captures in already owned available workspaces do not perform a new reservation.
+
 Protected task exclusions remove `.git` files/directories at every depth, `.solace_vault`, and Solace-owned trees. Ordinary dotfiles remain included. Root `task create --exclude GLOB` records additional exclusions; children inherit the profile and cannot override it. Profile changes require a new task. Manual source checkpoints retain their existing behavior; default listing and source usage use source history, while `--all-workspaces` exposes task owners/profiles. Pre-upgrade checkpoint exclusions are labelled unknown.
 
 Only relative internal symlinks can be materialized; absolute, escaping or cyclic chains are refused before publication. Exclude or replace unsafe links explicitly. Workspaces use reflink copies when supported and verified ordinary copies otherwise, with separate mutable inodes and no hardlinks. Immutable materialized bases remain internal to the store; corruption prevents reuse. Empty directories and special files are not preserved by the existing engine. Pause external writers for stable captures; Solace does not promise application-consistent multi-file snapshots.
 
 Ordinary workspace status returns a dated observation; `--refresh` requests a scan without storing new objects or checkpoints. Observations identify their comparison checkpoint and show stale when the head changed. Storage separates CAS file bytes from cache/workspace logical sizes. Reflinks can share extents: unique physical usage is reported unavailable, and retained references are not advertised as safe reclaimable space. Workspace/cache deletion and object GC are deferred.
+
+Task views and operation results contain bounded comparison samples, exact `counts`, an `observation` token, and a `truncated` flag. Full change lists remain in the catalog. Cached status returns a `changes` page with `entries`, `total` and `next_after`; read subsequent pages with the returned token:
+
+```bash
+solace workspace status PROJECT TASK --limit 128 --json
+solace workspace status PROJECT TASK --after CURSOR --observation TOKEN --limit 128 --json
+```
+
+API paging parameters are `after` (nonnegative), `limit` (1–256, default 128), and `observation` (SHA256 token, required after cursor 0). Pages are also capped at 128 KiB. A refresh cannot accept paging parameters. If the cached observation changes between pages, `OBSERVATION_CHANGED` requires restarting at cursor 0. Frame-limit errors retain their request ID and report `RESPONSE_TOO_LARGE`.
 
 ## Recovery and explicit relink
 
@@ -73,6 +84,8 @@ Core restarts preserve external active/blocked state. An interrupted ready captu
 Cleanup applies only to known, abandoned, unpublished operation staging. Preview tokens cover identities and entries; a changed preview is refused. Final workspaces and caches cannot be removed through this command. Interrupted storage recovery is retried when storage returns or is explicitly relinked.
 
 Workspace relink requires blocked/ready state, no owned operation, exact path confirmation and an acknowledgement that writers are paused. It compares an existing candidate against a task checkpoint and reports dirty content; it does not restore files, move files or replace the saved head. Old directories remain intact. Explicit project-store relink validates persistent identity and verifies relocated caches before reusing them.
+
+Relink refuses another workspace's directory or descendants and any candidate with multiply linked regular files. Copy such files into independent inodes first. Project-store relink records its previous location in the registry receipt; startup reconciles cache paths and recovery identities atomically with a catalog event. A crash between the two databases leaves reconciliation pending and gates new work until it can finish. Replaying a completed relink or upgrade returns its original receipt.
 
 ## Exact prompts and logical retention
 
