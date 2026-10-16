@@ -45,6 +45,23 @@ These items are part of the intended Solace product direction, but are outside t
 1. Design result integration, configured checks and manual review through the CLI/API, using the installed exact task baselines and ready results. The [approved architecture](../specs/local-first-agent-version-engine.md) defines the delivery order.
 2. Preserve interactive GUI rendering as a separate verification item; the existing Tk test execution gap is closed.
 
+## Proposed integration follow-ups (2026-10-16)
+
+The [first integration proposal](../superpowers/specs/2026-10-16-result-integration-design.md) covers manual child-to-parent and parent-to-project planning, conflict resolution, recoverable application and immutable receipts. These separable follow-ups remain tracked here while that design is reviewed:
+
+| Follow-up | Why separate / prerequisite |
+| --- | --- |
+| Configured check profiles and runner | Needs stable candidate-manifest IDs, invalidation rules and integration receipts first. The manual slice records that Solace did not run configured checks; it never invents a passing result. A later runner must bind real results to exact candidate/profile digests. |
+| Automatic integration policy | Depends on trusted check-profile configuration, passing exact-candidate checks and a verified manual apply/recovery path. Manual approval remains the default. |
+| Forward undo of an integration | Depends on durable before/after receipts and a decision on incremental submissions after a reverted contribution. Preserve immutable history; do not implement destructive rollback as undo. |
+| GUI review/status and binary previews | Depends on the stable CLI/API plan, conflict, apply and receipt contracts. Existing GUI behavior remains unchanged during core design. |
+| Rename detection and advisory binary locks | Path-based add/delete conflicts and whole-file selection provide an initial deterministic workflow; rename heuristics and lock ownership need separate design. |
+| Integration at a mount root or beneath an unwritable parent | The first journal lives beside its target on the same filesystem. Supporting another journal placement needs a separate ownership, capture-exclusion and recovery design. |
+| Integration into overlapping registered sources | The first slice refuses this target because projects have separate coordinators. Supporting shared roots needs cross-project claim and history semantics. |
+| Deeper task nesting | Needs integration and lifecycle rules beyond parent/direct-child ownership. |
+| Workspace/cache/journal retention and conservative GC | Needs the final reference model, abandoned-plan retention rules and active-operation/replication protection. No automatic deletion in the integration slice. |
+| Git import/export, local-folder replication, later encrypted cloud targets | Remain in the approved architecture's delivery order; they depend on local integration/history being reliable. |
+
 ## Evidence
 
 - Architecture: [`../specs/local-first-agent-version-engine.md`](../specs/local-first-agent-version-engine.md)
