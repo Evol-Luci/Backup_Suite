@@ -1,10 +1,10 @@
-# Task/workspace candidate review and acceptance
+# Task/workspace review and installed acceptance
 
-Branch `codex/task-workspace-design`, product baseline `40c8d22`, verified implementation through `79111c2`. The approved [design](../superpowers/specs/2026-10-15-task-lifecycle-workspaces-design.md) and [plan](../superpowers/plans/2026-10-15-task-lifecycle-workspaces.md) govern this candidate. Installation is pending explicit approval.
+Branch `codex/task-workspace-design`, product baseline `40c8d22`, verified implementation through `63e8452`. The approved [design](../superpowers/specs/2026-10-15-task-lifecycle-workspaces-design.md) and [plan](../superpowers/plans/2026-10-15-task-lifecycle-workspaces.md) govern this candidate. Installation and disposable live acceptance completed on 2026-10-16. The active runtime is `59f3d8340f868d4a`.
 
 ## Verification
 
-All **191 tests pass**: 52 engine, 123 core and 16 legacy. The final Task 10 completion run reconfirmed all three suites (52 in 1.925s, 123 in 56.691s, 16 in 0.471s); its complete combined output is [task-10-tests.log](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/task-10-tests.log). `git diff --check` passed. The baseline had 122 tests; no previous test was removed. Deliberate compatibility assertion changes support core schema 2, refuse schema 3, and refuse unregister when ownership cannot be checked in an unreadable catalog.
+All **192 tests pass**: 52 engine, 124 core and 16 legacy. These complete suites were rerun after the installed acceptance exposed the empty-Git-marker defect. `git diff --check` passed. The baseline had 122 tests; no prior test was removed. Deliberate compatibility assertions support schema 2, refuse schema 3 and refuse unregister when task ownership cannot be checked in an unreadable catalog.
 
 ```bash
 python -m unittest discover -s tests/solace_engine -p 'test_*.py' -v
@@ -12,36 +12,38 @@ python -m unittest discover -s tests/solace_engine -p 'test_*.py' -v
 
 ```text
 ----------------------------------------------------------------------
-Ran 52 tests in 2.065s
+Ran 52 tests in 1.972s
 
 OK
 ```
 
-Evidence: [engine log](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/final-engine.log).
+Evidence: [engine log](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/installed-run-20261016-br0xoco6/corrected-engine.log).
+
 ```bash
 python -m unittest discover -s tests/solace_core -p 'test_*.py' -v
 ```
 
 ```text
 ----------------------------------------------------------------------
-Ran 123 tests in 51.868s
+Ran 124 tests in 67.513s
 
 OK
 ```
 
-Evidence: [core log](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/final-core.log).
+Evidence: [core log](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/installed-run-20261016-br0xoco6/corrected-core.log).
+
 ```bash
 python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 ```text
 ----------------------------------------------------------------------
-Ran 16 tests in 0.512s
+Ran 16 tests in 0.507s
 
 OK
 ```
 
-Evidence: [legacy log](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/final-legacy.log).
+Evidence: [legacy log](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/installed-run-20261016-br0xoco6/corrected-legacy.log).
 
 The two end-to-end acceptance tests use a real same-user Unix socket and CLI in disposable directories. They prove independent same-filename edits in two children, exact immutable result restores, unchanged source Git/vault/hidden/binary/executable/link data, separate source history, retained earlier results after resume, awaiting-integration parent status, and progress in another project while preparation is blocked. Recovery coverage uses actual subprocess exits around staging, rename and SQLite publication, including relocated/unavailable storage, dirty finals, revision conflicts and guarded staging cleanup.
 
@@ -83,32 +85,57 @@ RED/GREEN logs, the original review package and reproductions, final suite outpu
 - Final: Ruling: process sandboxing, arbitrary sync detection, forensic prompt erasure, empty-directory preservation and application-consistent capture remain documented exclusions — external writers must cooperate and callers must accept engine limits — cost if wrong: these protections and preservation guarantees are unavailable.
 - Final: Ruling: the reviewer selectively inspected tests and did not observe its complete suite run finish — author freshly ran all three complete suites and the report labels independent versus author evidence — cost if wrong: unexamined weaknesses in tests may remain despite passing coverage.
 
+- Installed acceptance: Ruling: an empty `.git` directory is not a Git working tree — Git itself rejects the home directory as a repository, so ignore only empty directory markers while retaining conservative rejection of populated, pointer, symlink and unreadable markers — cost if wrong: an empty placeholder is admitted until repository metadata appears; later placement rechecks must catch that change.
+
 Deferred minors: none established separately. These rulings explicitly cover every item the reviewer declined to judge: remediation, installed rollout, physical power loss, deferred milestones, documented exclusions, and the selective test audit.
 
-## Concrete installation preview
+## Installed runtime and live acceptance
 
-- Candidate runtime: `/home/lucievol/.local/share/solace/core-runtimes/4681a85c8a74759d` (preview only; not installed).
-- Current installed runtime: `/home/lucievol/.local/share/solace/core-runtimes/152406111fa424cb`; live service PID `2696041`, active; socket enabled. Current installed doctor is healthy and registry has zero projects.
-- Changed targets: `/home/lucievol/.local/bin/solace` and `/home/lucievol/.config/systemd/user/solace-core.service`. The socket unit bytes are unchanged.
-- Candidate unit verification: `systemd-analyze --user verify` returned 0 for staged units in `/tmp/solace-task-workspaces-4681a85c8a74759d-units`; this verifies unit syntax/wiring, not live startup.
-- Fresh apply creates a uniquely named backup beneath `/home/lucievol/.local/share/solace/core-install-backups/`, preserving previous launcher/unit bytes and a rollback manifest. The exact new backup ID is allocated only on apply and must come from that apply result. Existing runtime and prior backup `20261015T111851Z-76a1c4a2` remain preserved.
-- Supported core schemas: 1 and 2; new projects use 2. Engine/registry versions stay 1. Installation does not migrate existing catalogs. Runtime rollback never downgrades databases or erases workspace references.
-- Disposable installed acceptance fixture reserved in this preview: `/home/lucievol/.local/share/solace/acceptance/task-workspaces-20261015-a12a16b1`. It has not been created. Immutable-result restore fixtures will use `/var/tmp/solace-installed-results-task-workspaces-20261015-a12a16b1`, also currently absent; restore destinations must be outside the protected registry data directory.
+The user approved installation and disposable acceptance on 2026-10-16. The initial candidate `4681a85c8a74759d` was installed with a verified backup, then acceptance exposed a placement false positive: `/home/lucievol/.git` is an **empty directory**, and Git reports that home is **not a repository**. Commit `63e8452` corrects that check and adds an end-to-end regression. Empty markers are ignored; populated, pointer, symlink and unreadable markers remain blocked. The full 192-test run passed before deploying the correction. No home Git marker was removed, no custom core configuration was created, and no alternate disk location was configured.
 
-After installation approval, the proposed commands are:
+| Verified installed state | Value |
+| --- | --- |
+| Runtime | `/home/lucievol/.local/share/solace/core-runtimes/59f3d8340f868d4a` |
+| Service | active, PID `2591374`; socket enabled |
+| Default workspace root | `/home/lucievol/.local/share/solace/workspaces` |
+| Doctor | healthy |
+| Live registry after acceptance | empty |
+| Runtime payload | every installed file matched the candidate manifest |
+| Supported core schemas | 1 and 2; new projects use 2; engine/registry versions remain 1 |
+
+The successful unmodified installed acceptance script ran from 13:18:46 to 13:18:52 UTC on 2026-10-16. Its fresh fixture is `/home/lucievol/.local/share/solace/acceptance/task-workspaces-20261016-2897659e`; immutable-result restores are preserved under `/var/tmp/solace-installed-results-task-workspaces-20261016-2897659e`.
+
+Actual live checks passed:
+
+- Exact prompt bytes, line endings and replay after logical deletion; fake prompt canary absent from ordinary task views and the service journal.
+- Parent and two children use independent mutable inodes and retain separate same-filename edits; saved results restore exact A/B contents while original source Git/vault/hidden/executable/link files remain unchanged.
+- Active external task states survive a service restart; ready parent/children report awaiting integration.
+- Socket activation reloads the installed candidate, including after the service/socket were stopped for genuine legacy-store creation.
+- The retained old runtime created a **new disposable schema-1 store**, which the candidate explicitly previewed/upgraded, then successfully used for a task. The consistent backup independently passed integrity checking at schema 1 while the current catalog is schema 2.
+- Migration receipt replay succeeds after unregister. All four successful tasks are now cancelled and both projects unregistered; preserved workspaces remain available for retained inspection.
+
+Successful project IDs: `8bc02e5d19f1405da0057242217c4e93` (parent plus two children), `9f7db594497b4a45ab965341311b9df8` (genuine schema-1 upgrade). The migration backup is `/home/lucievol/.local/share/solace/projects/9f7db594497b4a45ab965341311b9df8/schema-backups/387b997c-41a7-4439-b251-257469e0d23b/checkpoints.sqlite3`.
+
+The earlier failed attempt at fixture `task-workspaces-20261015-a12a16b1` produced only one created task and no workspace. Its prompt was logically redacted, task cancelled and project `fd9164711ffc401cbf07a9178445fb71` unregistered. Files and its store were preserved. This failure and the RED/GREEN regression are retained rather than hidden.
+
+Evidence: [successful acceptance](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/installed-run-20261016-br0xoco6/retry-acceptance-stdout.json), [final doctor](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/installed-run-20261016-br0xoco6/final-doctor.json), [service state](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/installed-run-20261016-br0xoco6/final-unit.txt), [runtime and migration-backup verification](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/installed-run-20261016-br0xoco6/runtime-and-backup-verification.json), and [installation run directory](/var/tmp/solace-task-workspaces-20261015-review-wdupci0o/installed-run-20261016-br0xoco6). Earlier review evidence remains intact in the parent archive.
+
+## Rollback
+
+Both immutable runtimes and both uniquely named install backups are preserved:
+
+- Pre-feature runtime `152406111fa424cb`: backup `/home/lucievol/.local/share/solace/core-install-backups/20261016T131221Z-c1ea3f1b`.
+- First feature runtime `4681a85c8a74759d`: backup `/home/lucievol/.local/share/solace/core-install-backups/20261016T131839Z-2e037263` made immediately before the placement correction.
+
+The second backup's previous bytes match the first candidate's installed digests, and current launcher/unit bytes match the corrected install result. To return fully to the pre-feature runtime, roll back these file changes in reverse order:
 
 ```bash
-python /home/lucievol/Projects/Backup_Suite/.worktrees/task-workspace-design/packaging/install-core.py --apply > /var/tmp/solace-task-workspaces-20261015-review-wdupci0o/install-result.json
+python /home/lucievol/Projects/Backup_Suite/.worktrees/task-workspace-design/packaging/install-core.py --rollback /home/lucievol/.local/share/solace/core-install-backups/20261016T131839Z-2e037263
+python /home/lucievol/Projects/Backup_Suite/.worktrees/task-workspace-design/packaging/install-core.py --rollback /home/lucievol/.local/share/solace/core-install-backups/20261016T131221Z-c1ea3f1b
 systemctl --user daemon-reload
-systemctl --user enable --now solace-core.socket
 systemctl --user restart solace-core.service
-python /var/tmp/solace-task-workspaces-20261015-review-wdupci0o/installed-acceptance.py --run --fixture /home/lucievol/.local/share/solace/acceptance/task-workspaces-20261015-a12a16b1
 ```
 
-The reviewed acceptance script requires an empty registry before creating fixtures. It verifies installed CLI/socket behavior, exact prompts, parent/two-child isolation, immutable result restores, ready status, restart persistence, replay after redaction, and absence of the fake prompt canary from the service journal. It cancels and unregisters fixtures while retaining their files. With the service/socket stopped, the retained old runtime creates a **new disposable genuine schema-1 store**; the candidate then previews/applies its upgrade, verifies the backup and task use, and checks upgrade replay after unregister. No existing project database is downgraded.
+These rollback commands are recorded, **not executed**. The socket was enabled before installation and remains enabled. Runtime rollback preserves stores and never downgrades databases; the older runtime refuses schema-2 catalogs, whose task/workspace references remain intact and need a compatible runtime. No existing user project was migrated; only disposable acceptance stores were created/upgraded.
 
-Rollback uses the **new apply result's** `rollback_command`, then `systemctl --user daemon-reload` and restoration of activation settings. Preserve that command and install result; do not substitute a historical backup ID. Already upgraded catalogs require a schema-2-capable runtime and remain intact.
-
-Installation, installed acceptance, merge and remote publication have not occurred. The feature branch and worktree remain available at the approved installation gate.
-
-Task 10 candidate work is complete at its explicit installation gate. The final ledger and evidence were archived before removal of this plan's ignored execution scratch directory. The isolated Git worktree is preserved.
+Installation and installed acceptance are complete. No merge to `main` or remote publication occurred. Branch `codex/task-workspace-design` and its isolated worktree are preserved.
