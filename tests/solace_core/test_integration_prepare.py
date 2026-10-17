@@ -367,3 +367,26 @@ class PrepareTests(IntegrationCase):
         self.assertTrue(all(conflict.reason == 'path_prefix' for conflict in plan.conflicts))
         self.assertEqual(self.version_bytes(plan.candidate), {'folder': b'current'})
         self.assertEqual(self.plans.load(plan.id), plan)
+
+    def test_snapshot_verification_streams_large_objects_and_checks_digest(self):
+        task, result, _ = self.seed()
+        plan = self.prepare_direct(task, result)
+        store = self.plans.snapshots
+        data = b'\0large-object' * 150000
+        entry = store.write_bytes('large', data, 0o644)
+        with patch.object(store, 'read_bytes', side_effect=AssertionError('whole-file buffering')):
+            with patch.object(store.objects, 'read_object', side_effect=AssertionError('whole-object buffering')):
+                blocks = list(store.iter_bytes(entry))
+                self.assertTrue(all(len(block) <= 128*1024 for block in blocks))
+                self.assertEqual(b''.join(blocks), data)
+                with self.catalog.connect(write=True) as db:
+                    version = store.insert(db, (entry,), parent_id=None,
+                        profile=json.loads(plan.candidate.profile_json),
+                        task_id=task, purpose='source')
+                self.assertEqual(store.entries(version), (entry,))
+        object_path = store.objects._object_path(entry.chunk_digests[0])
+        with object_path.open('r+b') as stream:
+            stream.seek(-1, os.SEEK_END); stream.write(b'!')
+        with self.assertRaises(CoreError) as error:
+            list(store.iter_bytes(entry))
+        self.assertEqual(error.exception.code, 'CORRUPT_OBJECT')

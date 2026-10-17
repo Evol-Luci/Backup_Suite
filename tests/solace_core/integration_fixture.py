@@ -36,3 +36,21 @@ class IntegrationCase(TaskCase):
         from solace_core.integration_snapshots import SnapshotStore
         store = SnapshotStore(self.service.catalog(self.project))
         return {entry.path: store.read_bytes(entry) for entry in store.entries(version)}
+
+    def make_binary_conflict(self, path='data.bin'):
+        (self.root/path).write_bytes(b'\0base')
+        task, result, _ = self.ready_task({path: b'\0incoming'})
+        (self.root/path).write_bytes(b'\0current')
+        plan = self.prepare_direct(task, result)
+        from solace_core.integration_review import IntegrationReview
+        self.review = IntegrationReview(self.service, self.catalog)
+        return plan
+
+    def export_direct(self, plan, destination):
+        from solace_core.integration_review import IntegrationReview
+        request = self.request('integration.export', plan=plan.id, revision=plan.revision,
+                               destination=str(destination))
+        self.export_request = request
+        self.export_operation = self.catalog.accept_operation(request)['operation_id']
+        self.catalog.transition(self.export_operation, 'running')
+        return IntegrationReview(self.service, self.catalog).export(self.export_operation, request)

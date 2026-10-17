@@ -2,16 +2,18 @@
 from dataclasses import asdict
 import hashlib
 import json
+import os
+import stat
 import re
 import uuid
 
-from solace_engine.errors import RepositoryError
+from solace_engine.errors import RepositoryError, CorruptObject
 from solace_engine.models import Checkpoint, FileEntry
 from solace_engine.object_store import ObjectStore
 from solace_engine.repository import ProjectRepository
 from .errors import CoreError, classify
 from .integration_types import Version
-from .workspace_trees import _manifest_digest, validate_workspace_links
+from .workspace_trees import _manifest_digest, validate_workspace_links, tree_directory
 
 
 def canonical(value):
@@ -38,16 +40,48 @@ class SnapshotStore:
         # never the mutable task workspace or registered source.
         self.repository = ProjectRepository.open_existing(catalog.store.parent, catalog.store)
 
-    def read_bytes(self, entry: FileEntry) -> bytes:
+    def iter_bytes(self, entry: FileEntry):
+        """Yield bounded blocks; content is verified only after full exhaustion.
+
+        Verify each CAS object as well as the whole file without allocating an
+        entire object, even if a previous caller stored a large single chunk.
+        Consumers must exhaust this iterator before publishing any staged bytes.
+        """
         try:
             self._metadata(entry)
-            data = b''.join(self.objects.read_object(digest) for digest in entry.chunk_digests)
-            if len(data) != entry.size or hashlib.sha256(data).hexdigest() != entry.file_digest:
-                raise CoreError('CORRUPT_OBJECT', 'Stored file size or whole-file digest failed verification.',
-                                'Preserve the checkpoint store and inspect its objects.')
-            return data
+            whole = hashlib.sha256(); size = 0
+            for digest in entry.chunk_digests:
+                path = self.objects._object_path(digest)
+                try:
+                    with tree_directory(path.parent) as parent:
+                        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                        try:
+                            before = os.fstat(fd)
+                            if not stat.S_ISREG(before.st_mode):
+                                raise CorruptObject('CAS object is not a regular file')
+                            chunk = hashlib.sha256()
+                            while True:
+                                data = os.read(fd, 64*1024)
+                                if not data: break
+                                chunk.update(data); whole.update(data); size += len(data)
+                                yield data
+                            after = os.fstat(fd)
+                            attributes = ('st_dev','st_ino','st_mode','st_size','st_mtime_ns','st_ctime_ns')
+                            if (chunk.hexdigest() != digest
+                                    or any(getattr(before, key) != getattr(after, key) for key in attributes)):
+                                raise CorruptObject('CAS object digest or identity changed')
+                        finally:
+                            os.close(fd)
+                except OSError as error:
+                    raise CorruptObject('CAS object is unavailable or unsafe') from error
+            if size != entry.size or whole.hexdigest() != entry.file_digest:
+                raise CorruptObject('whole-file size or digest failed verification')
         except (RepositoryError, ValueError, OSError) as error:
             raise classify(error) from error
+
+    def read_bytes(self, entry: FileEntry) -> bytes:
+        """Complete value for bounded merge inputs or symlink targets."""
+        return b''.join(self.iter_bytes(entry))
 
     @staticmethod
     def _metadata(entry):
@@ -67,9 +101,11 @@ class SnapshotStore:
                 raise ValueError('duplicate path')
             targets = {}
             for entry in entries:
-                data = self.read_bytes(entry)
                 if entry.kind == 'symlink':
-                    targets[entry.path] = data
+                    targets[entry.path] = self.read_bytes(entry)
+                else:
+                    for _ in self.iter_bytes(entry):
+                        pass
             validate_workspace_links(entries, targets)
             return _manifest_digest(entries, targets)
         except (RepositoryError, ValueError) as error:
