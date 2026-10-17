@@ -72,3 +72,98 @@ class LifecycleTests(TaskCase):
             view=self.show(task);self.assertEqual(view['workspace']['path'],str(candidate))
             self.assertEqual(view['workspace']['id'],old['workspace']['id']);self.assertEqual(view['workspace']['head_checkpoint'],head)
             self.assertTrue(previous.exists());previous=candidate
+
+    def test_relink_private_validation_releases_locks_and_retains_candidate_ownership(self):
+        import threading
+        from unittest.mock import patch
+        from solace_core.workspace_trees import validate_private_files
+        (self.root/'file').write_text('source');task=self.create_task();started=self.start(task)
+        self.mutate('task.block',task,reason='paused')
+        candidate=self.base/'candidate';shutil.copytree(started['path'],candidate)
+        request=self.request('workspace.relink',task=task,expected_revision=self.show(task)['revision'],
+            path=str(candidate),confirmed_path=str(candidate),checkpoint=started['base_checkpoint'],writers_paused=True)
+        entered=threading.Event();release=threading.Event();responses=[]
+        def paused(path):
+            entered.set()
+            if not release.wait(5):raise RuntimeError('test release absent')
+            return validate_private_files(path)
+        def relink():responses.append(self.service.handle(request))
+        with patch('solace_core.workspace_trees.validate_private_files',side_effect=paused):
+            worker=threading.Thread(target=relink);worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                done=threading.Event();other=self.base/'unrelated';other.mkdir();registered=[]
+                def register():
+                    registered.append(self.service.handle(self.request('project.add',root=str(other))));done.set()
+                placement=threading.Thread(target=register);placement.start()
+                try:self.assertTrue(done.wait(2),'placement lock held during private-file validation')
+                finally:
+                    if not done.is_set():release.set()
+                    placement.join(5)
+                self.assertTrue(registered[0]['ok'],registered)
+                catalog=self.service.catalog(self.project)
+                with self.service.coordinator(self.project).lock,catalog.connect(write=True) as db:
+                    intent=db.execute("SELECT phase,final_path FROM workspace_intents WHERE kind='relink'").fetchone()
+                    self.assertEqual(tuple(intent),('reserved',str(candidate)))
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM task_claims WHERE task_id=?',(task,)).fetchone()[0],1)
+                denied=self.service.handle(self.request('project.add',root=str(candidate)))
+                self.assertFalse(denied['ok'],denied)
+                self.assertEqual(denied['error']['code'],'INTEGRATION_TARGET_BUSY')
+            finally:release.set();worker.join(5)
+            self.assertTrue(responses[0]['ok'],responses)
+            outcome=self.wait_operation(responses[0]['result']['operation_id'])
+        self.assertEqual(outcome['state'],'succeeded',outcome)
+        self.assertEqual(self.show(task)['workspace']['path'],str(candidate))
+
+    def test_relink_rechecks_candidate_identity_after_private_validation(self):
+        from unittest.mock import patch
+        from solace_core.workspace_trees import validate_private_files
+        (self.root/'file').write_text('source');task=self.create_task();started=self.start(task)
+        self.mutate('task.block',task,reason='paused')
+        candidate=self.base/'candidate';shutil.copytree(started['path'],candidate)
+        preserved=self.base/'preserved-candidate'
+        def replace_after_validation(path):
+            validate_private_files(path)
+            candidate.rename(preserved);candidate.mkdir();(candidate/'file').write_text('replacement')
+        with patch('solace_core.workspace_trees.validate_private_files',side_effect=replace_after_validation):
+            accepted=self.mutate('workspace.relink',task,path=str(candidate),confirmed_path=str(candidate),
+                checkpoint=started['base_checkpoint'],writers_paused=True)
+            outcome=self.wait_operation(accepted['operation_id'])
+        self.assertEqual(outcome['state'],'failed',outcome)
+        self.assertEqual(outcome['error']['code'],'WORKSPACE_IDENTITY_MISMATCH')
+        self.assertEqual(self.show(task)['workspace']['path'],started['path'])
+        self.assertEqual((candidate/'file').read_text(),'replacement')
+        self.assertEqual((preserved/'file').read_text(),'source')
+
+    def test_relink_can_adopt_retired_source_but_not_retained_store(self):
+        (self.root/'file').write_text('source');task=self.create_task();started=self.start(task)
+        self.mutate('task.block',task,reason='paused')
+        candidate=self.base/'retired-source';shutil.copytree(started['path'],candidate)
+        retired=self.call('project.add',root=str(candidate));self.call('project.unregister',project=retired['id'])
+        denied=self.service.handle(self.request('workspace.relink',task=task,expected_revision=self.show(task)['revision'],
+            path=retired['store'],confirmed_path=retired['store'],checkpoint=started['base_checkpoint'],writers_paused=True))
+        self.assertFalse(denied['ok'],denied)
+        accepted=self.mutate('workspace.relink',task,path=str(candidate),confirmed_path=str(candidate),
+            checkpoint=started['base_checkpoint'],writers_paused=True)
+        self.assertEqual(self.wait_operation(accepted['operation_id'])['state'],'succeeded')
+        self.assertEqual(self.show(task)['workspace']['path'],str(candidate))
+
+    def test_relink_rechecks_task_context_after_private_validation(self):
+        from unittest.mock import patch
+        from solace_core.workspace_trees import validate_private_files
+        (self.root/'file').write_text('source');task=self.create_task();started=self.start(task)
+        self.mutate('task.block',task,reason='paused')
+        candidate=self.base/'candidate';shutil.copytree(started['path'],candidate)
+        catalog=self.service.catalog(self.project)
+        def change_context(path):
+            validate_private_files(path)
+            with catalog.connect(write=True) as db:
+                db.execute('UPDATE tasks SET revision=revision+1 WHERE id=?',(task,))
+        with patch('solace_core.workspace_trees.validate_private_files',side_effect=change_context):
+            accepted=self.mutate('workspace.relink',task,path=str(candidate),confirmed_path=str(candidate),
+                checkpoint=started['base_checkpoint'],writers_paused=True)
+            outcome=self.wait_operation(accepted['operation_id'])
+        self.assertEqual(outcome['state'],'failed',outcome)
+        self.assertEqual(outcome['error']['code'],'TASK_REVISION_CONFLICT')
+        self.assertEqual(self.show(task)['workspace']['path'],started['path'])
+        self.assertEqual((candidate/'file').read_text(),'source')

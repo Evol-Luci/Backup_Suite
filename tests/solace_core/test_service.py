@@ -176,3 +176,15 @@ threading.Event().wait(10)
                 self.assertEqual(result['state'],'interrupted' if phase=='before' else 'succeeded')
                 self.assertEqual(len(catalog.open_existing().list_checkpoints()),0 if phase=='before' else 1)
             finally: service.close()
+
+    def test_restore_can_reuse_vacant_retired_source_path(self):
+        (self.root/'a').write_text('saved')
+        operation=self.call('checkpoint.create',project=self.project,message='base')['operation_id']
+        checkpoint=self.wait_operation(operation)['result']['checkpoint_id']
+        destination=self.base/'retired-source';destination.mkdir()
+        retired=self.call('project.add',root=str(destination))
+        self.call('project.unregister',project=retired['id']);destination.rmdir()
+        operation=self.call('checkpoint.restore',project=self.project,checkpoint=checkpoint,destination=str(destination))['operation_id']
+        outcome=self.wait_operation(operation)
+        self.assertEqual(outcome['state'],'succeeded',outcome)
+        self.assertEqual((destination/'a').read_text(),'saved')

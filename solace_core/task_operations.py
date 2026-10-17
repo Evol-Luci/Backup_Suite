@@ -95,8 +95,8 @@ class TaskOperations:
                 reference=db.execute('SELECT 1 FROM task_checkpoint_refs WHERE task_id=? AND checkpoint_id=?',(task_id,p['checkpoint'])).fetchone()
                 if reference is None: raise CoreError('BASELINE_INELIGIBLE','The comparison checkpoint is not in this task history.','Select one of this task’s saved checkpoints.')
                 self.paths.assert_unowned(candidate,workspace['id'])
-                from .workspace_trees import validate_private_files
-                validate_private_files(candidate)
+                # Recursive private-file validation belongs to finish_relink,
+                # after this durable intent commits and acceptance locks release.
                 context.update(workspace=workspace,candidate_identity=self.paths.validate(candidate),
                                relink_checkpoint=p['checkpoint'],writers_paused=True)
             else:

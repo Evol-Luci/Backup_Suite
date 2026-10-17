@@ -76,10 +76,11 @@ class WorkspacePaths:
         if any(canonical.is_relative_to(Path(root).resolve()) for root in self.config.sync_roots):
             raise CoreError('UNSUPPORTED_STORAGE','Synchronized workspaces are unsupported.','Choose unsynchronized local storage.')
         self.policy.check(canonical,creating=creating)
-        for project in self.registry.known_registrations():
-            for key in ('root','store'):
-                if overlap(canonical,Path(project[key])):
-                    raise CoreError('UNSUPPORTED_STORAGE','The workspace overlaps a registered source or store.','Choose a separate unsynchronized local workspace root.')
+        # Retired catalogs still own managed data, but not ordinary source roots.
+        boundaries=[Path(project['root']) for project in self.registry.list()]
+        boundaries.extend(Path(project['store']) for project in self.registry.known_registrations())
+        if any(overlap(canonical,boundary) for boundary in boundaries):
+            raise CoreError('UNSUPPORTED_STORAGE','The workspace overlaps a registered source or retained store.','Choose a separate unsynchronized local workspace root.')
         for ancestor in (canonical,*canonical.parents):
             if git_control_marker(ancestor/'.git'):
                 raise CoreError('UNSUPPORTED_STORAGE','The workspace is inside a Git-controlled tree.','Choose a workspace root outside Git working trees.')

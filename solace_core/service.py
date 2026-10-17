@@ -223,6 +223,12 @@ class CoreService:
                         candidate.update(root=str(Path(p['root']).resolve()),store=str(location.canonical),mount_id=location.mount_id)
                         repair=ProjectCatalog(candidate,self.registry.policy)
                         repair.validate()
+                        # Old pathname claims cannot protect a relocated source.
+                        # Integration relocation needs an explicit durable handoff;
+                        # until then, refuse before recovery or registry mutation.
+                        with repair.connect() as db:
+                            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3 and db.execute("SELECT 1 FROM integration_journals WHERE phase NOT IN ('committed','restored','abandoned')").fetchone():
+                                raise CoreError('INTEGRATION_TARGET_BUSY','Integration recovery still owns this project.','Resolve integration recovery before changing registration.',True)
                         repair.recover_interrupted()
                     if current is not None:
                         from .schema import schema_version
@@ -358,8 +364,11 @@ class CoreService:
                 if method == 'checkpoint.restore':
                     destination=Path(p['destination'])
                     self.workspace_paths.assert_unowned(destination)
-                    for record in self.registry.known_registrations():
-                        if any(destination.is_relative_to(Path(record[key])) or Path(record[key]).is_relative_to(destination) for key in ('root','store')):
+                    # Retained managed paths were checked above; ordinary
+                    # source ownership ends when its registration is removed.
+                    for record in self.registry.list():
+                        root=Path(record['root'])
+                        if destination.is_relative_to(root) or root.is_relative_to(destination):
                             raise CoreError('UNSUPPORTED_STORAGE','The restore destination now overlaps registered data.','Choose a fresh separate destination.')
                 claims.claim_access(db,operation_id,paths)
             repo = catalog.open_existing()

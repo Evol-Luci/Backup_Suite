@@ -61,6 +61,7 @@ class IsolationReviewTests(TaskCase):
                 if response['ok']:
                     result=self.wait_operation(response['result']['operation_id'])
                     self.assertEqual(result['state'],'failed',result)
+                    self.assertEqual(result['error']['code'],'UNSUPPORTED_STORAGE',result)
                 else:self.assertEqual(response['error']['code'],'UNSUPPORTED_STORAGE',response)
                 self.assertEqual(self.show(left)['workspace']['path'],baseline['path'])
         self.assertEqual((sibling/'sub/file').read_text(),'baseline')

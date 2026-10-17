@@ -538,3 +538,44 @@ class ClaimsTests(IntegrationCase):
         self.assertIsInstance(outcomes[0],CoreError)
         with self.catalog.connect() as db:
             self.assertEqual(db.execute('SELECT state,current_revision FROM integration_plans').fetchone()[:],('abandoned',1))
+
+    def test_unavailable_source_and_store_relink_refuses_unresolved_journal(self):
+        from solace_core.service import CoreService
+        from solace_core.catalog import ProjectCatalog
+        plan=self.simple_plan();journal=self.reserve(plan)
+        registration=self.registry.get(self.project)
+        self.service.close()
+        moved_root=self.base/'moved-source';self.root.rename(moved_root)
+        moved_store=self.base/'moved-store';Path(registration['store']).rename(moved_store)
+        self.service=CoreService(self.registry,config=self.config);self.addCleanup(self.service.close)
+        request=self.request('project.relink',root=str(moved_root),store=str(moved_store),confirmed_root=str(moved_root))
+        response=self.service.handle(request)
+        self.assertFalse(response['ok'],response)
+        self.assertEqual(response['error']['code'],'INTEGRATION_TARGET_BUSY')
+        self.assertEqual(self.registry.get(self.project),registration)
+        replacement=ProjectCatalog(dict(registration,root=str(moved_root),store=str(moved_store)),self.policy)
+        with replacement.connect() as db:
+            self.assertEqual(db.execute('SELECT phase,identity_json FROM integration_journals WHERE operation_id=?',(journal.operation_id,)).fetchone()[:],('reserved',None))
+            self.assertEqual(db.execute("SELECT path FROM integration_claims WHERE operation_id=? AND kind='target'",(journal.operation_id,)).fetchone()[0],str(self.root))
+        self.assertFalse(self.service.handle(self.request('checkpoint.create',message='must remain unavailable'))['ok'])
+        self.assertFalse(journal.path.exists())
+        self.assertEqual((moved_root/'a').read_bytes(),b'base')
+
+    def test_retired_nested_source_no_longer_blocks_approval_but_store_is_retained(self):
+        nested=self.root/'retired';nested.mkdir()
+        retired=self.call('project.add',root=str(nested))
+        self.call('project.unregister',project=retired['id'])
+        plan=self.simple_plan()
+        self.assertEqual(self.claims().validate(plan,scan=True)['revision'],1)
+        self.assertRegex(self.claims().approve(self.approval_request(plan,accept_unchecked=True))['approval'],r'^[0-9a-f]{64}$')
+        with self.assertRaises(CoreError):self.service.workspace_paths.assert_unowned(Path(retired['store'])/'candidate')
+        self.reserve(plan)
+
+    def test_reregistered_source_does_not_overlap_its_retired_registration(self):
+        previous=self.project
+        self.call('project.unregister',project=previous)
+        self.project=self.call('project.add',root=str(self.root))['id']
+        self.assertNotEqual(previous,self.project)
+        plan=self.simple_plan()
+        self.assertEqual(self.claims().validate(plan,scan=True)['revision'],1)
+        self.reserve(plan)

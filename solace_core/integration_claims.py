@@ -95,7 +95,7 @@ class IntegrationClaims:
     def _ownership(self, plan, *, operation_id=None):
         root = Path(plan.target.identity.path)
         self.assert_access(root, operation_id=operation_id)
-        for record in self.paths.registry.known_registrations():
+        for record in self.paths.registry.list():
             if record['id'] != self.catalog.registration['id'] and overlap(root, Path(record['root'])):
                 raise CoreError('INTEGRATION_SHARED_TARGET', 'The target overlaps another registered source root.',
                                 'Separate the registered sources before preparing integration.')
@@ -215,7 +215,8 @@ class IntegrationClaims:
         for path in (root,*root.parents):
             if path.is_symlink(): stale('A target ancestor became a symlink.')
         managed = [path for path,_ in self.paths.managed_locations()]
-        managed += [Path(r[key]) for r in self.paths.registry.known_registrations() for key in ('root','store')]
+        # managed_locations includes every retained store and owned path.
+        managed += [Path(r['root']) for r in self.paths.registry.list()]
         managed += list(self.paths.config.sync_roots)
         # Workspace parent sharing is allowed; concrete workspaces/intents still block.
         workspace_root = self.paths.config.workspace_root
