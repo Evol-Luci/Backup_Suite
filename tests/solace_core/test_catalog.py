@@ -50,7 +50,7 @@ class CatalogTests(unittest.TestCase):
     def test_identity_schema_and_corruption_block_open(self):
         self.create()
         for query, code in [("UPDATE core_metadata SET store_uuid='wrong'", 'STORE_IDENTITY_MISMATCH'),
-                            ('UPDATE core_metadata SET schema_version=3', 'SCHEMA_VERSION_UNSUPPORTED'),
+                            ('UPDATE core_metadata SET schema_version=4', 'SCHEMA_VERSION_UNSUPPORTED'),
                             ('PRAGMA user_version=2', 'SCHEMA_VERSION_UNSUPPORTED')]:
             with self.subTest(query=query):
                 with closing(sqlite3.connect(self.store / 'checkpoints.sqlite3')) as db, db:

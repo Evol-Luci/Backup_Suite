@@ -40,7 +40,7 @@ class PromptMaintenance:
             if not coordinator.lock.acquire(blocking=False): continue
             try:
                 catalog=self.service.catalog(record['id'])
-                if schema_version(catalog)==2: PromptStore(catalog).purge_expired(limit=self.batch_size)
+                if schema_version(catalog) in (2, 3): PromptStore(catalog).purge_expired(limit=self.batch_size)
                 self.failures.pop(record['id'],None)
             except Exception as error:
                 code=classify(error).code

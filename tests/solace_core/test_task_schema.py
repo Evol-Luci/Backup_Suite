@@ -42,7 +42,7 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(before,{p.relative_to(self.store):p.read_bytes() for p in self.store.rglob('*') if p.is_file()})
         request=self.request();request['params']['plan_token']=preview['plan_token']
         outcome=apply_upgrade(catalog,preview['plan_token'],request)
-        self.assertEqual(schema_version(catalog),2)
+        self.assertEqual(schema_version(catalog),3)
         self.assertEqual(apply_upgrade(catalog,preview['plan_token'],request),outcome)
         with readonly_database(Path(outcome['backup'])) as db:
             self.assertEqual(db.execute('SELECT schema_version FROM core_metadata').fetchone()[0],1)
@@ -76,11 +76,11 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(caught.exception.code,'UPGRADE_PREVIEW_STALE')
         self.assertFalse((self.store/'schema-backups').exists())
 
-    def test_new_store_uses_v2_and_source_head_is_independent(self):
+    def test_new_store_uses_v3_and_source_head_is_independent(self):
         from solace_core.schema import schema_version
         from solace_core.lineage import Lineage
         catalog=ProjectCatalog.create(self.registration,self.policy)
-        self.assertEqual(schema_version(catalog),2)
+        self.assertEqual(schema_version(catalog),3)
         repo=catalog.open_existing();lineage=Lineage(catalog)
         (self.project/'a').write_bytes(b'abc')
         source=repo.create_checkpoint('source',parent_id=None,publication_hook=lambda db,cp:lineage.publish_source(db,cp,[]))

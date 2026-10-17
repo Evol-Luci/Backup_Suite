@@ -154,7 +154,7 @@ class RecoveryTests(TaskCase):
                 observed.append(True);return True
             return original_exists(path)
         with patch.object(Path,'exists',exists),readonly_database(catalog.database) as db:
-            self.assertEqual(db.execute('SELECT schema_version FROM core_metadata').fetchone()[0],2)
+            self.assertEqual(db.execute('SELECT schema_version FROM core_metadata').fetchone()[0],3)
         self.assertEqual(before,{p.name:p.read_bytes() for p in catalog.store.iterdir() if p.is_file()})
 
     def test_explicit_store_relink_preserves_recovery_and_relocates_verified_base_cache(self):

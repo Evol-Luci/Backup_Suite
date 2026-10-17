@@ -22,7 +22,7 @@ def inspect(registration, policy=None):
             version=db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0]
             result.update(core_schema=version,engine_schema=db.execute('PRAGMA user_version').fetchone()[0],
                           task_upgrade_required=(version==1),database_rollback='Runtime rollback does not downgrade project databases or erase task/workspace references.')
-            if version==2:
+            if version in (2, 3):
                 result['tasks']={state:0 for state in ('created','active','blocked','ready','cancelled')}
                 result['tasks'].update({row[0]:row[1] for row in db.execute('SELECT state,COUNT(*) FROM tasks GROUP BY state')})
                 result['workspaces']=[]

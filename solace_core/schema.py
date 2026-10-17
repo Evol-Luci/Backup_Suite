@@ -7,6 +7,7 @@ from pathlib import Path
 from .catalog import readonly_database
 from .errors import CoreError
 from .protocol import fingerprint
+from .integration_schema import DDL as INTEGRATION_DDL, create_schema_v3
 from solace_engine.object_store import ObjectStore
 
 DDL = """
@@ -115,19 +116,31 @@ def schema_version(catalog):
 
 
 def require_tasks(catalog):
-    if schema_version(catalog) != 2:
+    if schema_version(catalog) not in (2, 3):
         raise CoreError('PROJECT_UPGRADE_REQUIRED', 'This project requires the task catalog upgrade.',
                         'Run project upgrade --preview, review it, then apply its plan token.')
 
 
+def require_integrations(catalog) -> None:
+    if schema_version(catalog) != 3:
+        raise CoreError("PROJECT_UPGRADE_REQUIRED",
+                        "This project needs the integration catalog upgrade.",
+                        "Review project upgrade --preview before applying its token.")
+
+
 def _snapshot(catalog, db):
     version = db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0]
-    latest = db.execute('SELECT id FROM checkpoints ORDER BY created_at DESC,rowid DESC LIMIT 1').fetchone()
+    if version == 1:
+        head = db.execute('SELECT id FROM checkpoints ORDER BY created_at DESC,rowid DESC LIMIT 1').fetchone()
+    else:
+        head = db.execute('SELECT checkpoint_id FROM source_head WHERE singleton=1').fetchone()
     return dict(ddl_sha256=hashlib.sha256(DDL.encode()).hexdigest(),
+                integration_ddl_sha256=hashlib.sha256(INTEGRATION_DDL.encode()).hexdigest(),
+                target_schema=3,
                 project=catalog.registration['id'], store_uuid=catalog.registration['store_uuid'],
                 store=str(catalog.store), mount_id=catalog.registration['mount_id'],
                 core_schema=version, engine_schema=db.execute('PRAGMA user_version').fetchone()[0],
-                source_head=latest[0] if latest else None,
+                source_head=head[0] if head else None,
                 checkpoint_count=db.execute('SELECT COUNT(*) FROM checkpoints').fetchone()[0],
                 events_max=db.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0])
 
@@ -141,7 +154,7 @@ def preview_upgrade(catalog):
     with readonly_database(catalog.database) as db:
         snapshot = _snapshot(catalog,db)
         pending = db.execute("SELECT 1 FROM operations WHERE state IN ('queued','running') LIMIT 1").fetchone()
-    return dict(required=snapshot['core_schema']==1, from_schema=snapshot['core_schema'], to_schema=2,
+    return dict(required=snapshot['core_schema'] in (1, 2), from_schema=snapshot['core_schema'], to_schema=3,
                 plan_token=_token(snapshot), busy=bool(pending),
                 backup_directory=str(catalog.store/'schema-backups'),
                 rollback='Runtime rollback does not downgrade project databases.', snapshot=snapshot)
@@ -150,22 +163,22 @@ def preview_upgrade(catalog):
 def apply_upgrade(catalog, plan_token, request):
     version = schema_version(catalog)
     signature = fingerprint(request['method'],request['params'],request['actor'])
-    if version == 2:
-        with catalog.connect() as db:
-            row=db.execute('SELECT fingerprint,result_json FROM task_requests WHERE request_id=?',(request['id'],)).fetchone()
-        if row:
-            if row[0] != signature:
-                raise CoreError('REQUEST_ID_REUSED','This request ID has different arguments.','Use a new request ID.')
-            return json.loads(row[1])
+    # Replay precedes upgrade eligibility, source availability and backup creation.
+    with catalog.connect() as db:
+        operation = db.execute('SELECT 1 FROM operations WHERE request_id=?', (request['id'],)).fetchone()
+        if operation:
+            raise CoreError('REQUEST_ID_REUSED','This request ID belongs to an operation.','Use a new request ID.')
+        if version in (2, 3):
+            row = db.execute('SELECT fingerprint,result_json FROM task_requests WHERE request_id=?', (request['id'],)).fetchone()
+            if row:
+                if row[0] != signature:
+                    raise CoreError('REQUEST_ID_REUSED','This request ID has different arguments.','Use a new request ID.')
+                return json.loads(row[1])
     preview = preview_upgrade(catalog)
     if not preview['required'] or plan_token != preview['plan_token']:
         raise CoreError('UPGRADE_PREVIEW_STALE','The upgrade preview is no longer current.','Review a fresh project upgrade --preview.')
     if preview['busy']:
         raise CoreError('PROJECT_BUSY','Project operations are pending.','Wait for them before upgrading.',True)
-    # Check the operation namespace before creating backup evidence.
-    with catalog.connect() as db:
-        if db.execute('SELECT 1 FROM operations WHERE request_id=?',(request['id'],)).fetchone():
-            raise CoreError('REQUEST_ID_REUSED','This request ID belongs to an operation.','Use a new request ID.')
     directory = catalog.store/'schema-backups'
     if directory.is_symlink():
         raise CoreError('STORE_UNAVAILABLE','The backup directory is a symlink.','Preserve it and choose an intact store.')
@@ -178,21 +191,27 @@ def apply_upgrade(catalog, plan_token, request):
         destination=sqlite3.connect(backup)
         try: source.backup(destination)
         finally: destination.close()
-    with backup.open('rb') as stream: os.fsync(stream.fileno())
-    ObjectStore._sync_directories((backup_directory,directory,catalog.store))
     with readonly_database(backup) as db:
-        if db.execute('PRAGMA integrity_check').fetchall()!=[('ok',)] or db.execute('SELECT schema_version FROM core_metadata').fetchone()[0]!=1:
+        if (db.execute('PRAGMA integrity_check').fetchall() != [('ok',)]
+                or db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] != version):
             raise CoreError('DATABASE_CORRUPT','The migration backup failed verification.','Preserve the backup and original catalog.')
-    result=dict(schema_version=2,backup=str(backup))
+        if _token(_snapshot(catalog, db)) != plan_token:
+            raise CoreError('UPGRADE_PREVIEW_STALE','The catalog changed before the backup completed.','Review a fresh preview; backup evidence was preserved.')
+    with backup.open('rb') as stream:
+        os.fsync(stream.fileno())
+    ObjectStore._sync_directories((backup_directory,directory,catalog.store))
+    result=dict(schema_version=3,backup=str(backup))
     with catalog.connect(write=True) as db:
         if _token(_snapshot(catalog,db))!=plan_token:
             raise CoreError('UPGRADE_PREVIEW_STALE','The catalog changed before migration.','Review a fresh preview; backup evidence was preserved.')
-        create_schema_v2(db)
-        legacy=json.dumps(dict(version=1,protected=[],exclusions=None,origin='legacy_unknown'),sort_keys=True)
-        db.execute("INSERT INTO checkpoint_context SELECT id,'source',NULL,NULL,?,1 FROM checkpoints",(legacy,))
-        db.execute('UPDATE source_head SET checkpoint_id=? WHERE singleton=1',(preview['snapshot']['source_head'],))
-        db.execute('UPDATE core_metadata SET schema_version=2 WHERE singleton=1')
-        catalog._event(db,dict(id=None,actor=request['actor']),'project.upgraded','succeeded',dict(from_schema=1,to_schema=2))
+        if version == 1:
+            create_schema_v2(db)
+            legacy=json.dumps(dict(version=1,protected=[],exclusions=None,origin='legacy_unknown'),sort_keys=True)
+            db.execute("INSERT INTO checkpoint_context SELECT id,'source',NULL,NULL,?,1 FROM checkpoints",(legacy,))
+            db.execute('UPDATE source_head SET checkpoint_id=? WHERE singleton=1',(preview['snapshot']['source_head'],))
+        create_schema_v3(db)
+        db.execute('UPDATE core_metadata SET schema_version=3 WHERE singleton=1')
+        catalog._event(db,dict(id=None,actor=request['actor']),'project.upgraded','succeeded',dict(from_schema=version,to_schema=3))
         db.execute('INSERT INTO task_requests VALUES (?,?,?,?)',(request['id'],signature,json.dumps(result),catalog._now()))
     catalog.notify()
     return result

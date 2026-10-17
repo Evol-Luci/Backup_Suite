@@ -148,7 +148,7 @@ class WorkspacePaths:
                 catalog.validate(require_root=False)
                 with readonly_database(catalog.database) as db:
                     version=db.execute('SELECT schema_version FROM core_metadata').fetchone()[0]
-                    if version==2:
+                    if version in (2, 3):
                         locations += [(Path(r[0]),r[1]) for r in db.execute('SELECT path,id FROM workspaces')]
                         for r in db.execute('SELECT staging_path,final_path,workspace_id,phase FROM workspace_intents'):
                             locations += [(Path(path),r[2]) for path in r[:2]

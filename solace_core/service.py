@@ -102,7 +102,7 @@ class CoreService:
         """Complete the latest explicit registry hand-off, including after a crash."""
         import json
         from .schema import schema_version
-        if schema_version(catalog)!=2: return
+        if schema_version(catalog) not in (2, 3): return
         with self.registry.connect() as db:
             receipts=[(row[0],json.loads(row[1])) for row in db.execute('SELECT id,response_json FROM requests ORDER BY rowid DESC')]
         for request_id,value in receipts:
@@ -118,7 +118,7 @@ class CoreService:
         from .schema import schema_version
         from .workspace_paths import directory_identity
         import json
-        if schema_version(catalog)!=2: return
+        if schema_version(catalog) not in (2, 3): return
         from .workspace_trees import _verify_tree,_targets,_manifest_digest
         from solace_engine.repository import ProjectRepository
         caches=[]
@@ -171,7 +171,7 @@ class CoreService:
         if method == 'core.status':
             return dict(pid=os.getpid(), protocol_version=1, projects=self.registry.list(), recovery=self.recovery,
                         capabilities=['tasks.v1','workspaces.v1','project-upgrade.v1','prompt-retention.v1'],
-                        core_schema_supported=[1,2],core_schema_created=2,
+                        core_schema_supported=[1,2,3],core_schema_created=3,
                         prompt_maintenance=dict(self.maintenance.failures) if self.maintenance else {})
         if method == 'doctor':
             from .diagnostics import inspect_registry
@@ -213,7 +213,7 @@ class CoreService:
                 if method == 'project.relink':
                     if current is not None:
                         from .schema import schema_version
-                        if schema_version(current)==2:
+                        if schema_version(current) in (2, 3):
                             with current.connect() as db:
                                 if db.execute('SELECT 1 FROM task_claims LIMIT 1').fetchone():
                                     raise CoreError('TASK_BUSY','Workspace recovery still owns this project.','Resolve or abandon it before relocating available storage.')
@@ -227,7 +227,7 @@ class CoreService:
                 if current is None:
                     raise CoreError('STORE_UNAVAILABLE','Task ownership cannot be checked while the catalog is unavailable.','Reconnect or explicitly relink the store before unregistering.')
                 from .schema import schema_version
-                if schema_version(current)==2:
+                if schema_version(current) in (2, 3):
                     from .tasks import TaskCatalog
                     with current.connect() as db: TaskCatalog(current).assert_project_unregisterable(db)
                 result = self.registry.unregister(project, reqid, actor)
@@ -246,7 +246,7 @@ class CoreService:
                 if method=='project.upgrade':
                     if not p['preview']:
                         from .schema import schema_version
-                        if schema_version(catalog)==2:
+                        if schema_version(catalog) in (2, 3):
                             with catalog.connect() as db: cached=TaskCatalog(catalog).lookup_request(request,db)
                             if cached is not None: return cached
                     if not registered: raise CoreError('PROJECT_NOT_FOUND','The project is no longer registered.','Register it before upgrading.')
@@ -314,13 +314,13 @@ class CoreService:
             repo = catalog.open_existing()
             if method == 'checkpoint.list':
                 from .schema import schema_version
-                if schema_version(catalog)==2:
+                if schema_version(catalog) in (2, 3):
                     from .lineage import Lineage
                     return {'checkpoints': Lineage(catalog).published(p.get('all_workspaces',False))}
                 return {'checkpoints': [asdict(cp) for cp in repo.list_checkpoints()]}
             if method == 'checkpoint.usage':
                 from .schema import schema_version
-                if schema_version(catalog)==2:
+                if schema_version(catalog) in (2, 3):
                     from .lineage import Lineage
                     return Lineage(catalog).source_usage()
                 return asdict(repo.storage_usage())
@@ -333,7 +333,7 @@ class CoreService:
             p, method = request['params'], request['method']
             if method == 'checkpoint.create':
                 from .schema import schema_version
-                if schema_version(catalog)==2:
+                if schema_version(catalog) in (2, 3):
                     from .lineage import Lineage
                     lineage=Lineage(catalog)
                     def publish(db,cp):

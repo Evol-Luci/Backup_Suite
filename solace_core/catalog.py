@@ -73,8 +73,10 @@ class ProjectCatalog:
                     state TEXT NOT NULL, details_json TEXT NOT NULL);
             ''')
             from .schema import create_schema_v2
+            from .integration_schema import create_schema_v3
             create_schema_v2(db)
-            db.execute('INSERT INTO core_metadata VALUES (1,2,?,?)', (registration['id'], registration['store_uuid']))
+            create_schema_v3(db)
+            db.execute('INSERT INTO core_metadata VALUES (1,3,?,?)', (registration['id'], registration['store_uuid']))
         catalog.database.chmod(0o600)
         ObjectStore._sync_directories((catalog.store / 'objects', catalog.store, catalog.store.parent))
         return catalog
@@ -96,7 +98,7 @@ class ProjectCatalog:
                 if db.execute('PRAGMA user_version').fetchone()[0] != 1:
                     raise CoreError('SCHEMA_VERSION_UNSUPPORTED', 'Unsupported checkpoint schema.', 'Use a compatible Solace version; preserve this store.')
                 row = db.execute('SELECT schema_version, project_id, store_uuid FROM core_metadata WHERE singleton=1').fetchone()
-                if row is None or row[0] not in (1, 2):
+                if row is None or row[0] not in (1, 2, 3):
                     raise CoreError('SCHEMA_VERSION_UNSUPPORTED', 'Unsupported core schema.', 'Use a compatible Solace version; preserve this store.')
                 if row[1:] != (r['id'], r['store_uuid']):
                     raise CoreError('STORE_IDENTITY_MISMATCH', 'This store belongs to a different project.', 'Select the original store; no data has been replaced.')
@@ -152,7 +154,7 @@ class ProjectCatalog:
     def find_operation(self, request):
         signature = fingerprint(request['method'], request['params'], request['actor'])
         with self.connect() as db:
-            if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] == 2:
+            if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3):
                 from .tasks import TaskCatalog
                 return TaskCatalog(self).lookup_request(request,db)
             row = db.execute('SELECT id,fingerprint FROM operations WHERE request_id=?', (request['id'],)).fetchone()
@@ -165,7 +167,7 @@ class ProjectCatalog:
     def accept_operation(self, request):
         signature = fingerprint(request['method'], request['params'], request['actor'])
         with self.connect(write=True) as db:
-            if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] == 2:
+            if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3):
                 from .tasks import TaskCatalog
                 cached=TaskCatalog(self).lookup_request(request,db)
                 if cached is not None:
@@ -254,7 +256,7 @@ class ProjectCatalog:
             for operation in ids:
                 error = CoreError('OPERATION_INTERRUPTED', 'The core stopped before a committed result.', 'Inspect the operation and any restore destination before starting new work.').as_dict()
                 self._transition(db, operation, 'interrupted', error=error)
-                if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] == 2:
+                if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3):
                     intent=db.execute("SELECT phase FROM workspace_intents WHERE operation_id=? OR recovery_operation_id=?",(operation,operation)).fetchone()
                     if intent is None or intent[0] in ('committed','abandoned'):
                         db.execute('DELETE FROM task_claims WHERE operation_id=?',(operation,))
