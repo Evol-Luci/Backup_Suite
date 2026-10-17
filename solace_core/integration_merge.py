@@ -5,10 +5,13 @@ nonblocking: service threads never queue behind another project's calculation.
 """
 from dataclasses import replace
 from difflib import SequenceMatcher
-import multiprocessing
+from multiprocessing.connection import Connection
+from pathlib import Path
 import os
 import selectors
 import struct
+import subprocess
+import sys
 import threading
 import time
 from typing import Callable
@@ -118,6 +121,56 @@ def _text_worker(connection, base, current, incoming):
         connection.close()
 
 
+def _stdio_worker(worker):
+    """Exec entrypoint: bootstrap contains no input bytes or pickled state."""
+    request = Connection(os.dup(0), readable=True, writable=False)
+    response = Connection(os.dup(1), readable=False, writable=True)
+    try:
+        values = tuple(request.recv_bytes(maxlength=_MAX_BYTES) for _ in range(3))
+        worker(response, *values)
+    finally:
+        request.close()
+        response.close()
+
+
+def _worker_command():
+    # Pin only this package location. Inheriting/pickling sys.path, argv or other
+    # multiprocessing preparation metadata can itself fill a bootstrap pipe.
+    root = str(Path(__file__).resolve().parent.parent)
+    code = (f'import sys; sys.path.insert(0, {root!r}); '
+            'from solace_core.integration_merge import _stdio_worker, _text_worker; '
+            '_stdio_worker(_text_worker)')
+    return [sys.executable, '-c', code]
+
+
+def _start_worker():
+    # Popen returns after exec, before Python imports/sitecustomize run. All
+    # potentially large writes happen explicitly below, never during startup.
+    return subprocess.Popen(_worker_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, bufsize=0)
+
+
+def _send_worker_inputs(connection, values, deadline):
+    """Deliver bounded frames without waiting on a stalled interpreter/reader."""
+    fd = connection.fileno()
+    os.set_blocking(fd, False)
+    with selectors.DefaultSelector() as selector:
+        selector.register(fd, selectors.EVENT_WRITE)
+        for value in values:
+            for part in (struct.pack('!i', len(value)), value):
+                pending = memoryview(part)
+                while pending:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not selector.select(remaining):
+                        return 'merge_timeout'
+                    try:
+                        written = os.write(fd, pending[:65536])
+                    except BlockingIOError:
+                        continue
+                    pending = pending[written:]
+    return None
+
+
 def _receive_worker(connection, deadline):
     """Read bounded Connection framing without a blocking recv/unpickle.
 
@@ -175,46 +228,41 @@ def _bounded_merge(base, current, incoming):
         return None, 'text_too_large'
     if not _WORKER_SLOTS.acquire(blocking=False):
         return None, 'merge_worker_busy'
-    receiver = sender = process = None
-    started = False
+    process = None
     try:
-        context = multiprocessing.get_context('spawn')
-        receiver, sender = context.Pipe(duplex=False)
-        process = context.Process(target=_text_worker, args=(sender, base, current, incoming),
-                                  name='solace-text-merge', daemon=True)
         deadline = time.monotonic() + _WORKER_TIMEOUT
-        process.start()
-        started = True
-        sender.close()
-        result = _receive_worker(receiver, deadline)
+        process = _start_worker()
+        reason = _send_worker_inputs(process.stdin, (base, current, incoming), deadline)
+        if reason:
+            return None, reason
+        process.stdin.close()
+        result = _receive_worker(process.stdout, deadline)
         if result[1] in {'merge_timeout', 'merge_worker_malformed', 'merge_worker_failed'}:
             return result
-        process.join(max(0, deadline - time.monotonic()))
-        if process.is_alive():
+        try:
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
             return None, 'merge_timeout'
-        if process.exitcode != 0:
+        if process.returncode != 0:
             return None, 'merge_worker_failed'
         # The child owns the only remaining writer. After its clean exit the
         # first frame must be followed by EOF, never an ignored second message.
-        if os.read(receiver.fileno(), 1):
+        if os.read(process.stdout.fileno(), 1):
             return None, 'merge_worker_malformed'
         return result
     except (OSError, ValueError, EOFError, RuntimeError):
         return None, 'merge_worker_failed'
     finally:
         if process is not None:
-            if started:
-                if process.is_alive():
-                    process.terminate()
-                    process.join(0.1)
-                    if process.is_alive():
-                        process.kill()
-                process.join()
-            process.close()
-        if receiver is not None:
-            receiver.close()
-        if sender is not None:
-            sender.close()
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=0.1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            process.stdin.close()
+            process.stdout.close()
         _WORKER_SLOTS.release()
 
 

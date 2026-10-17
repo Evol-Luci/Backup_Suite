@@ -1,6 +1,9 @@
 """Byte preservation, conservative manifests and bounded worker failures."""
 import hashlib
-import multiprocessing
+import os
+from pathlib import Path
+import tempfile
+import sys
 import threading
 import time
 import unittest
@@ -65,6 +68,16 @@ def partial_worker(connection, *args):
 
 def crash_worker(connection, *args):
     connection.close()
+
+
+def worker_command(worker):
+    """Run fault fixtures through the real exec and bounded stdio transport."""
+    source = Path(__file__).resolve()
+    code = (f'import sys; sys.path[:0] = {[str(source.parents[2]), str(source.parent)]!r}; '
+            'from solace_core.integration_merge import _stdio_worker; '
+            f'from {worker.__module__} import {worker.__name__}; '
+            f'_stdio_worker({worker.__name__})')
+    return [sys.executable, '-c', code]
 
 
 class BytesStore:
@@ -150,7 +163,26 @@ class TextMergeTests(unittest.TestCase):
 
 class ManifestFixture(unittest.TestCase):
     def setUp(self):
+        import solace_core.integration_merge as module
         self.store = BytesStore()
+        self.processes = []
+        original = module._start_worker
+
+        def start_worker():
+            process = original()
+            self.processes.append(process)
+            return process
+
+        launch = patch.object(module, '_start_worker', side_effect=start_worker)
+        launch.start()
+        self.addCleanup(launch.stop)
+        self.addCleanup(self.assert_workers_reaped)
+
+    def assert_workers_reaped(self):
+        for process in self.processes:
+            self.assertIsNotNone(process.poll(), 'merge worker remains alive')
+            self.assertTrue(process.stdin.closed)
+            self.assertTrue(process.stdout.closed)
 
     def merge(self, b=(), c=(), i=()):
         from solace_core.integration_merge import merge_entries
@@ -281,7 +313,6 @@ class ManifestMergeTests(ManifestFixture):
 class WorkerMergeTests(ManifestFixture):
     def test_worker_failures_keep_whole_current_file_and_leave_no_children(self):
         import solace_core.integration_merge as module
-        baseline = {p.pid for p in multiprocessing.active_children()}
         b = self.store.entry('a', b'a\nb\nc')
         c = self.store.entry('a', b'A\nb\nc')
         i = self.store.entry('a', b'a\nb\nC')
@@ -292,20 +323,67 @@ class WorkerMergeTests(ManifestFixture):
                                (crash_worker, 'merge_worker_failed'),
                                (crash_after_reply_worker, 'merge_worker_failed'),
                                (hang_after_reply_worker, 'merge_timeout')]:
-            with self.subTest(worker=worker), patch.object(module, '_text_worker', worker):
+            with self.subTest(worker=worker), patch.object(module, '_worker_command', return_value=worker_command(worker)):
                 started = time.monotonic()
                 result = self.merge([b], [c], [i])
                 self.assertLess(time.monotonic() - started, 3.0)
                 self.assertEqual(result.entries, (c,))
                 self.assertEqual([x.reason for x in result.conflicts], [reason])
-                self.assertEqual({p.pid for p in multiprocessing.active_children()}, baseline)
+                self.assert_workers_reaped()
+
+    def test_delayed_interpreter_startup_cannot_block_large_input_delivery(self):
+        import solace_core.integration_merge as module
+        b = self.store.entry('a', b'a' * (1024 * 1024))
+        c = self.store.entry('a', b'b' * (1024 * 1024))
+        i = self.store.entry('a', b'c' * (1024 * 1024))
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            marker = root / 'startup-delayed'
+            (root / 'sitecustomize.py').write_text(
+                "import os, sys, time\n"
+                "code = ' '.join(sys.orig_argv)\n"
+                "if ('from multiprocessing.spawn import spawn_main' in code\n"
+                "        or 'from solace_core.integration_merge import' in code):\n"
+                "    with open(os.environ['SOLACE_MERGE_START_MARKER'], 'w') as marker: marker.write('delayed')\n"
+                "    time.sleep(4)\n")
+            # Multiprocessing preparation metadata is also larger than a pipe;
+            # the exec transport must not serialize this parent's sys.path.
+            with patch.dict(os.environ, {
+                    'PYTHONPATH': str(root) + os.pathsep + str(Path.cwd()),
+                    'SOLACE_MERGE_START_MARKER': str(marker)}), \
+                    patch.object(sys, 'path', sys.path + ['x' * 65536]):
+                started = time.monotonic()
+                result = self.merge([b], [c], [i])
+                elapsed = time.monotonic() - started
+            self.assertTrue(marker.exists(), 'spawned interpreter did not exercise delayed startup')
+            self.assertLess(elapsed, 3.0, 'spawn bootstrap or input delivery escaped the deadline')
+        self.assertEqual(result.entries, (c,))
+        self.assertEqual([x.reason for x in result.conflicts], ['merge_timeout'])
+        self.assert_workers_reaped()
+        # Both admission slots must remain available, rather than leaking one
+        # and accidentally succeeding through the other.
+        acquired = 0
+        try:
+            for _ in range(2):
+                self.assertTrue(module._WORKER_SLOTS.acquire(blocking=False))
+                acquired += 1
+        finally:
+            for _ in range(acquired):
+                module._WORKER_SLOTS.release()
+        # A timed-out startup must also leave later real work operational.
+        b2 = self.store.entry('other', b'a\nb\nc')
+        c2 = self.store.entry('other', b'A\nb\nc')
+        i2 = self.store.entry('other', b'a\nb\nC')
+        result = self.merge([b2], [c2], [i2])
+        self.assertEqual(self.store.read(result.entries[0]), b'A\nb\nC')
+        self.assertEqual(result.conflicts, ())
 
     def test_extra_frame_after_valid_reply_is_malformed(self):
         import solace_core.integration_merge as module
         b = self.store.entry('a', b'a\nb\nc')
         c = self.store.entry('a', b'A\nb\nc')
         i = self.store.entry('a', b'a\nb\nC')
-        with patch.object(module, '_text_worker', trailing_frame_worker):
+        with patch.object(module, '_worker_command', return_value=worker_command(trailing_frame_worker)):
             result = self.merge([b], [c], [i])
         self.assertEqual(result.entries, (c,))
         self.assertEqual([x.reason for x in result.conflicts], ['merge_worker_malformed'])
@@ -316,7 +394,7 @@ class WorkerMergeTests(ManifestFixture):
         c = self.store.entry('hang', b'HANG\nb\nc')
         i = self.store.entry('hang', b'hang\nb\nC')
         results = []
-        with patch.object(module, '_text_worker', conditional_worker):
+        with patch.object(module, '_worker_command', return_value=worker_command(conditional_worker)):
             thread = threading.Thread(target=lambda: results.append(self.merge([b], [c], [i])))
             thread.start()
             try:
