@@ -1,6 +1,8 @@
 """Verified immutable checkpoint views, independent of live source locations."""
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, replace
 import hashlib
+import hmac
+import secrets
 import json
 import os
 import stat
@@ -12,7 +14,8 @@ from solace_engine.models import Checkpoint, FileEntry
 from solace_engine.object_store import ObjectStore
 from solace_engine.repository import ProjectRepository
 from .errors import CoreError, classify
-from .integration_types import Version
+from .integration_types import Version, Identity
+from .workspace_paths import directory_identity
 from .workspace_trees import _manifest_digest, validate_workspace_links, tree_directory
 
 
@@ -30,9 +33,25 @@ def entry_from_json(value):
     return FileEntry(**dict(value, chunk_digests=tuple(value['chunk_digests'])))
 
 
+@dataclass(frozen=True)
+class VerifiedSnapshot:
+    """Process-local adapter evidence, authenticated by its producing instance."""
+    checkpoint_id: str
+    created_at: str
+    parent_id: str | None
+    profile_json: str
+    task_id: str
+    purpose: str
+    entries: tuple[FileEntry, ...]
+    manifest_sha256: str
+    store_identity: Identity
+    seal: bytes = b''
+
+
 class SnapshotStore:
     def __init__(self, catalog):
         self.catalog = catalog
+        self._verification_key = secrets.token_bytes(32)
         catalog.validate(require_root=False)
         self.objects = ObjectStore.open_existing(catalog.store)
         # The engine insertion primitive needs an existing repository handle,
@@ -150,20 +169,51 @@ class SnapshotStore:
         self._metadata(entry)
         return entry
 
+    def _seal(self, record):
+        value=asdict(record);value.pop('seal')
+        return hmac.digest(self._verification_key,canonical(value).encode(),'sha256')
+
+    def verify_snapshot(self, entries: tuple[FileEntry, ...], *, parent_id: str | None,
+                        profile: dict, task_id: str, purpose: str) -> VerifiedSnapshot:
+        from .tasks import profile as capture_profile
+        if purpose not in ('source','workspace') or profile != capture_profile(profile.get('exclusions',[])):
+            raise CoreError('INVALID_REQUEST','Snapshot context must use the exact capture profile.',
+                            'Verify the incoming task profile before inserting a snapshot.')
+        identity=Identity(**directory_identity(self.catalog.store,self.catalog.policy))
+        entries=tuple(sorted(entries,key=lambda entry:entry.path))
+        digest=self._verify(entries)
+        if Identity(**directory_identity(self.catalog.store,self.catalog.policy)) != identity:
+            raise CoreError('STORE_IDENTITY_MISMATCH','The verified store identity changed.','Preserve it and reverify.')
+        record=VerifiedSnapshot(uuid.uuid4().hex,self.catalog._now(),parent_id,canonical(profile),task_id,purpose,
+                                entries,digest,identity)
+        return replace(record,seal=self._seal(record))
+
+    def insert_verified(self, db, record: VerifiedSnapshot) -> Version:
+        """Only metadata/SQL work; caller already verified bytes outside its locks."""
+        if type(record) is not VerifiedSnapshot or not hmac.compare_digest(record.seal,self._seal(record)):
+            raise CoreError('INTEGRATION_MANIFEST_INVALID','Snapshot evidence is fabricated, changed or belongs to another adapter.',
+                            'Verify immutable bytes again with this snapshot adapter.')
+        if Identity(**directory_identity(self.catalog.store,self.catalog.policy)) != record.store_identity:
+            raise CoreError('STORE_IDENTITY_MISMATCH','The verified store identity changed.','Preserve it and reverify.')
+        task=db.execute('SELECT profile_json FROM tasks WHERE id=?',(record.task_id,)).fetchone()
+        if task is None or canonical(json.loads(task[0])) != record.profile_json:
+            raise CoreError('INTEGRATION_PROFILE_MISMATCH','The task capture profile changed after verification.',
+                            'Prepare and verify the exact task profile again.')
+        if record.parent_id is not None and db.execute('SELECT 1 FROM checkpoints WHERE id=?',(record.parent_id,)).fetchone() is None:
+            raise CoreError('CHECKPOINT_NOT_FOUND','The explicit snapshot parent does not exist.','Inspect the target history.')
+        checkpoint=Checkpoint(record.checkpoint_id,'Integration snapshot',record.created_at,record.parent_id,
+                              len(record.entries),sum(e.size for e in record.entries))
+        self.repository._insert_checkpoint(db,checkpoint,record.entries)
+        workspace=db.execute('SELECT id FROM workspaces WHERE task_id=?',(record.task_id,)).fetchone() if record.purpose=='workspace' else None
+        db.execute('INSERT INTO checkpoint_context VALUES (?,?,?,?,?,0)',
+                   (checkpoint.id,record.purpose,record.task_id if record.purpose=='workspace' else None,
+                    workspace[0] if workspace else None,record.profile_json))
+        return Version(checkpoint.id,record.manifest_sha256,record.profile_json)
+
     def insert(self, db, entries: tuple[FileEntry, ...], *, parent_id: str | None,
                profile: dict, task_id: str, purpose: str, published: bool = False) -> Version:
-        if purpose not in ('source', 'workspace') or published:
-            raise CoreError('INVALID_REQUEST', 'Integration snapshots must be unpublished source/workspace contexts.',
+        if published:
+            raise CoreError('INVALID_REQUEST','Integration snapshots must be unpublished source/workspace contexts.',
                             'Publish history only through the integration success transaction.')
-        if parent_id is not None and db.execute('SELECT 1 FROM checkpoints WHERE id=?', (parent_id,)).fetchone() is None:
-            raise CoreError('CHECKPOINT_NOT_FOUND', 'The explicit snapshot parent does not exist.', 'Inspect the target history.')
-        entries = tuple(sorted(entries, key=lambda entry: entry.path))
-        digest = self._verify(entries)
-        checkpoint = Checkpoint(uuid.uuid4().hex, 'Integration snapshot', self.catalog._now(), parent_id,
-                                len(entries), sum(e.size for e in entries))
-        self.repository._insert_checkpoint(db, checkpoint, entries)
-        workspace = db.execute('SELECT id FROM workspaces WHERE task_id=?', (task_id,)).fetchone() if purpose == 'workspace' else None
-        db.execute('INSERT INTO checkpoint_context VALUES (?,?,?,?,?,0)',
-                   (checkpoint.id, purpose, task_id if purpose == 'workspace' else None,
-                    workspace[0] if workspace else None, canonical(profile)))
-        return Version(checkpoint.id, digest, canonical(profile))
+        record=self.verify_snapshot(entries,parent_id=parent_id,profile=profile,task_id=task_id,purpose=purpose)
+        return self.insert_verified(db,record)

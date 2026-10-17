@@ -57,5 +57,5 @@ class Journal:
     plan_id: str
     revision: int
     path: Path
-    identity: Identity
+    identity: Identity | None  # None only while reserved and not yet created.
     target: Identity

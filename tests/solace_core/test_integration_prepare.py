@@ -151,13 +151,13 @@ class PrepareTests(IntegrationCase):
         with catalog.connect() as db:
             before = db.execute('SELECT COUNT(*) FROM checkpoints').fetchone()[0]
         from solace_core.integration_snapshots import SnapshotStore
-        original = SnapshotStore.insert
+        original = SnapshotStore.insert_verified
         calls = []
         def fail_after_current(store, db, *args, **kwargs):
             value = original(store, db, *args, **kwargs); calls.append(value)
             if len(calls) == 2: raise RuntimeError('injected publication failure')
             return value
-        with patch.object(SnapshotStore, 'insert', fail_after_current), self.assertRaises(CoreError):
+        with patch.object(SnapshotStore, 'insert_verified', fail_after_current), self.assertRaises(CoreError):
             self.prepare_direct(task, result)
         with catalog.connect() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM checkpoints').fetchone()[0], before)

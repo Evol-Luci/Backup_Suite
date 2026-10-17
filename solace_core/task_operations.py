@@ -35,6 +35,7 @@ class TaskOperations:
         row=rowdict(db,'SELECT * FROM workspaces WHERE task_id=?',(task,))
         if row is None:
             raise CoreError('WORKSPACE_UNAVAILABLE','This task has no published workspace.','Start it or inspect its interrupted preparation.')
+        self.paths.assert_access(Path(row['path']),operation_id=getattr(self,'_access_operation',None))
         self.paths.validate(Path(row['path']),expected=row)
         return row
 
@@ -52,7 +53,7 @@ class TaskOperations:
         require_tasks(self.catalog)
         if request['method']=='workspace.recovery.resume': return self.accept_resume(request)
         p=request['params'];method=request['method'];task_id=p['task']
-        with self.paths.registry.lock,self.catalog.connect(write=True) as db:
+        with self.paths.registry.lock,self.coordinator.lock,self.catalog.connect(write=True) as db:
             cached=self.tasks.lookup_request(request,db)
             if cached is not None: return cached
             task=self.tasks.row(db,task_id)
@@ -74,6 +75,7 @@ class TaskOperations:
                 else:
                     if 'expected_parent_revision' in p: raise CoreError('INVALID_REQUEST','Root tasks have no parent revision.','Remove the parent revision.')
                     if 'from_checkpoint' not in p:
+                        self.paths.assert_access(Path(self.catalog.registration['root']))
                         self.catalog.validate()
                         context.update(capture_identity=directory_identity(Path(self.catalog.registration['root']),self.catalog.policy),
                                        capture_parent=Lineage(self.catalog).source_head(db))
@@ -85,6 +87,7 @@ class TaskOperations:
                 if task['state'] not in ('blocked','ready'): self.invalid_state()
                 workspace=rowdict(db,'SELECT * FROM workspaces WHERE task_id=?',(task_id,))
                 if workspace is None: raise CoreError('WORKSPACE_UNAVAILABLE','There is no workspace to relink.','Start the task first.')
+                self.paths.assert_access(Path(workspace['path']))
                 candidate=Path(p['path'])
                 canonical=str(candidate.resolve())
                 if p['writers_paused'] is not True or p['confirmed_path']!=canonical:
@@ -136,6 +139,8 @@ class TaskOperations:
         return row,json.loads(row['params_json'])
 
     def check(self,db,operation,context):
+        for key in ('capture_identity','workspace','candidate_identity'):
+            if key in context: self.paths.assert_access(Path(context[key]['path']),operation_id=operation)
         self.catalog.validate(require_root=False)
         if directory_identity(self.catalog.store,self.catalog.policy)!=context['store_identity']:
             raise CoreError('STORE_IDENTITY_MISMATCH','The store directory identity changed.','Preserve storage and inspect recovery.')
@@ -157,6 +162,13 @@ class TaskOperations:
     def run(self,operation,request):
         try:
             self.catalog.transition(operation,'running')
+            from .integration_claims import IntegrationClaims
+            self._access_operation=operation
+            with self.paths.registry.lock,self.coordinator.lock,self.catalog.connect(write=True) as db:
+                _,context=self.context(db,operation)
+                paths=[context[key]['path'] for key in ('capture_identity','workspace','candidate_identity') if key in context]
+                IntegrationClaims(self.service,self.catalog).claim_access(db,operation,paths)
+                self.check(db,operation,context)
             method=request['method']
             if method=='workspace.recovery.resume': self.resume_publication(operation)
             elif method=='workspace.relink':
@@ -181,6 +193,14 @@ class TaskOperations:
                 except Exception:
                     self.service._pending_recovery.add(self.project)
                     log.error('task operation unavailable id=%s exception=%s',operation,type(error).__name__)
+
+        finally:
+            try:
+                with self.catalog.connect(write=True) as db:
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+                        db.execute('DELETE FROM integration_claims WHERE operation_id=?',(operation,))
+            except Exception:
+                self.service._pending_recovery.add(self.project)
 
     def start(self,operation):
         with self.coordinator.lock,self.catalog.connect() as db:

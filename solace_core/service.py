@@ -1,5 +1,6 @@
 """Single local authority for registration, operation scheduling, and recovery."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
 import fcntl
@@ -183,7 +184,7 @@ class CoreService:
         project = p['project']
         coordinator = self.coordinator(project)
         if method in ('project.relink', 'project.unregister'):
-            with coordinator.lock:
+            with self.registry.lock, coordinator.lock:
                 from .protocol import fingerprint
                 receipt_params=dict(project=project)
                 if method=='project.relink':
@@ -191,9 +192,6 @@ class CoreService:
                 with self.registry.connect() as db:
                     receipt=self.registry._receipt(db,reqid,fingerprint(method,receipt_params,actor))
                 if receipt is not None:
-                    if method=='project.relink':
-                        try: self.catalog(project)
-                        except CoreError: pass  # Stable receipt; pending reconciliation still gates new work.
                     return receipt
                 self.registry.get(project)
                 try:
@@ -210,7 +208,22 @@ class CoreService:
                     current = None  # Explicit lifecycle changes can repair unavailable locations.
                 if current is not None and current.has_pending():
                     raise CoreError('PROJECT_BUSY', 'This project has queued or running operations.', 'Wait for its operations to finish before changing registration.', True)
+                if current is not None:
+                    self.workspace_paths.assert_access(Path(current.registration['root']))
+                    with current.connect() as db:
+                        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3 and db.execute("SELECT 1 FROM integration_journals WHERE phase NOT IN ('committed','restored','abandoned')").fetchone():
+                            raise CoreError('INTEGRATION_TARGET_BUSY','Integration recovery still owns this project.','Resolve integration recovery before changing registration.',True)
                 if method == 'project.relink':
+                    if current is None:
+                        # An explicit repair may present the same store at its new
+                        # location. With no in-process worker, classify its stopped
+                        # readers before placement checks; publication claims remain.
+                        candidate=self.registry.get(project)
+                        location=self.registry.policy.check(Path(p['store']))
+                        candidate.update(root=str(Path(p['root']).resolve()),store=str(location.canonical),mount_id=location.mount_id)
+                        repair=ProjectCatalog(candidate,self.registry.policy)
+                        repair.validate()
+                        repair.recover_interrupted()
                     if current is not None:
                         from .schema import schema_version
                         if schema_version(current) in (2, 3):
@@ -219,21 +232,24 @@ class CoreService:
                                     raise CoreError('TASK_BUSY','Workspace recovery still owns this project.','Resolve or abandon it before relocating available storage.')
                     result = self.registry.relink(project, Path(p['root']), Path(p['store']), p['confirmed_root'], reqid, actor)
                     self._pending_recovery.add(project)
-                    try:
-                        self.catalog(project)
-                    except Exception as error:
-                        self.recovery.append(dict(project=project, error=classify(error).as_dict()))
+                else:
+                    if current is None:
+                        raise CoreError('STORE_UNAVAILABLE','Task ownership cannot be checked while the catalog is unavailable.','Reconnect or explicitly relink the store before unregistering.')
+                    from .schema import schema_version
+                    if schema_version(current) in (2, 3):
+                        from .tasks import TaskCatalog
+                        with current.connect() as db: TaskCatalog(current).assert_project_unregisterable(db)
+                    result = self.registry.unregister(project, reqid, actor)
+                    old = self._catalogs.pop(project, None)
+                    if old: old.notify()
                     return result
-                if current is None:
-                    raise CoreError('STORE_UNAVAILABLE','Task ownership cannot be checked while the catalog is unavailable.','Reconnect or explicitly relink the store before unregistering.')
-                from .schema import schema_version
-                if schema_version(current) in (2, 3):
-                    from .tasks import TaskCatalog
-                    with current.connect() as db: TaskCatalog(current).assert_project_unregisterable(db)
-                result = self.registry.unregister(project, reqid, actor)
-                old = self._catalogs.pop(project, None)
-                if old: old.notify()
-                return result
+            # Reconciliation can verify complete caches; it runs after the
+            # durable registration handoff, outside the placement lock.
+            try:
+                self.catalog(project)
+            except Exception as error:
+                self.recovery.append(dict(project=project,error=classify(error).as_dict()))
+            return result
         if method == 'project.show':
             return self.registry.show(project)
         if method in ('project.upgrade','project.prompt-policy.show','project.prompt-policy.set') or method.startswith(('task.','workspace.')):
@@ -241,7 +257,8 @@ class CoreService:
             from .prompts import PromptStore
             from .task_operations import TaskOperations
             from .schema import preview_upgrade,apply_upgrade,require_tasks
-            with coordinator.lock:
+            placement = self.registry.lock if method in ('task.start','task.ready','workspace.checkpoint','workspace.relink','workspace.status','workspace.recovery.resume') else nullcontext()
+            with placement, coordinator.lock:
                 catalog,registered=self._receipt_catalog(project)
                 if method=='project.upgrade':
                     if not p['preview']:
@@ -275,7 +292,8 @@ class CoreService:
                 if method=='task.prompt.delete': return prompts.delete(request)
                 if method=='project.prompt-policy.set': return prompts.set_policy(request)
                 return TaskOperations(self,catalog).accept(request)
-        with coordinator.lock:
+        placement = self.registry.lock if method in ('checkpoint.create','checkpoint.restore') else nullcontext()
+        with placement, coordinator.lock:
             if method in ('checkpoint.create', 'checkpoint.verify', 'checkpoint.restore', 'operation.show'):
                 catalog, registered = self._receipt_catalog(project)
             else:
@@ -297,7 +315,10 @@ class CoreService:
                     raise CoreError('PROJECT_NOT_FOUND', 'The project is no longer registered.',
                                     'Retained receipts can be inspected; new operations require a registered project.')
                 catalog.validate()
+                if method == 'checkpoint.create': self.workspace_paths.assert_access(Path(catalog.registration['root']))
                 if method == 'checkpoint.restore':
+                    self.workspace_paths.assert_access(canonical)
+                    self.workspace_paths.assert_unowned(canonical)
                     if destination.exists() or destination.is_symlink():
                         raise FileExistsError()
                     for record in self.registry.list():
@@ -329,8 +350,19 @@ class CoreService:
     def _work(self, catalog, operation_id, request):
         try:
             catalog.transition(operation_id, 'running')
-            repo = catalog.open_existing()
             p, method = request['params'], request['method']
+            from .integration_claims import IntegrationClaims
+            claims = IntegrationClaims(self,catalog)
+            paths = [catalog.registration['root']] if method == 'checkpoint.create' else ([p['destination']] if method == 'checkpoint.restore' else [])
+            with self.registry.lock, self.coordinator(catalog.registration['id']).lock, catalog.connect(write=True) as db:
+                if method == 'checkpoint.restore':
+                    destination=Path(p['destination'])
+                    self.workspace_paths.assert_unowned(destination)
+                    for record in self.registry.known_registrations():
+                        if any(destination.is_relative_to(Path(record[key])) or Path(record[key]).is_relative_to(destination) for key in ('root','store')):
+                            raise CoreError('UNSUPPORTED_STORAGE','The restore destination now overlaps registered data.','Choose a fresh separate destination.')
+                claims.claim_access(db,operation_id,paths)
+            repo = catalog.open_existing()
             if method == 'checkpoint.create':
                 from .schema import schema_version
                 if schema_version(catalog) in (2, 3):
@@ -364,3 +396,11 @@ class CoreService:
                 with self.coordinator(catalog.registration['id']).lock:
                     self._pending_recovery.add(catalog.registration['id'])
                 log.error('operation unavailable id=%s exception=%s', operation_id, type(error).__name__)
+
+        finally:
+            try:
+                with catalog.connect(write=True) as db:
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+                        db.execute('DELETE FROM integration_claims WHERE operation_id=?',(operation_id,))
+            except Exception:
+                self._pending_recovery.add(catalog.registration['id'])

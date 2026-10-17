@@ -26,6 +26,13 @@ def _refuse(code, message):
     raise CoreError(code, message, 'Inspect the task, retained plan and destination before preparing a new plan.')
 
 
+def review_token(plan, expected):
+    """Stable original B/R/C/M authentication, shared by every retained reader."""
+    value = dict(plan=plan.id, revision=plan.revision, expected=expected,
+                 **{name: asdict(getattr(plan, name)) for name in ('base','current','incoming','candidate')})
+    return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
 @contextmanager
 def _directory(path):
     """Hold every component without following a substituted ancestor."""
@@ -120,16 +127,22 @@ class IntegrationPlans:
         base, previous = self.baseline(db, task['id'], params['result'], target.key)
         return task, target, base, previous
 
-    def _boundaries(self):
-        roots = {self.catalog.store, self.paths.config.workspace_root, self.paths.registry.path.parent/'projects'}
-        roots.update(path for path, _ in self.paths.managed_locations())
+    def _boundaries(self, operation_id=None):
+        roots = {self.catalog.store, self.paths.config.workspace_root, self.paths.registry.path.parent/'projects', *self.paths.config.sync_roots}
+        roots.update(path for path, _ in self.paths.managed_locations(include_read_claims=False))
         records = self.paths.registry.known_registrations()
         for record in records:
             catalog = ProjectCatalog(record, self.catalog.policy)
             with catalog.connect() as db:
                 if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
                     for table, column in (('integration_journals', 'journal_path'), ('integration_exports', 'path'), ('integration_claims', 'path')):
-                        roots.update(Path(row[0]) for row in db.execute(f'SELECT {column} FROM {table}'))
+                        where = " WHERE kind!='target'" if table == 'integration_claims' else ''
+                        roots.update(Path(row[0]) for row in db.execute(f'SELECT {column} FROM {table}'+where))
+        if operation_id:
+            with self.catalog.connect() as db:
+                owned = {Path(row[0]) for row in db.execute("SELECT path FROM integration_claims WHERE operation_id=? AND kind!='target'",(operation_id,))}
+                owned.update(Path(row[0]) for row in db.execute('SELECT journal_path FROM integration_journals WHERE operation_id=?',(operation_id,)))
+            roots.difference_update(owned)
         return sorted(str(path) for path in roots)
 
     def _expected(self, db, params, target, roots):
@@ -217,68 +230,75 @@ class IntegrationPlans:
                         if target.task_id:
                             revisions[target.task_id] = target.revision
                         self.tasks.claim(db, operation_id, revisions)
+                        from .integration_claims import IntegrationClaims
+                        IntegrationClaims(self.service,self.catalog).claim_access(db,operation_id,[target.identity.path])
                         operation_params = {key:params[key] for key in ('project', 'task', 'result', 'expected_revision', 'expected_target_revision') if key in params}
                         db.execute('UPDATE operations SET params_json=? WHERE id=?', (canonical(operation_params), operation_id))
-                if receipt:
-                    self.catalog.notify()
-                    return self.load(receipt['plan_id'], receipt['revision'])
-                profile = json.loads(task['profile_json'])
-                base = self.snapshots.version(base_id, profile)
-                incoming = self.snapshots.version(params['result'], profile)
-                b, r = self.snapshots.entries(base), self.snapshots.entries(incoming)
-                roots = self._boundaries()
-                root = Path(target.identity.path)
-                self._protected_delta(root, profile, roots, b, r)
-                with self.catalog.connect() as db:
-                    expected = self._expected(db, params, target, roots)
-                repo = ProjectRepository.open_existing(root, self.catalog.store)
-                excluded = self._excluder(root, profile, roots)
-                current_entries, warnings = repo._scan(profile['exclusions'], excluded=excluded)
-                if warnings:
-                    _refuse('INTEGRATION_CAPTURE_INCOMPLETE', 'In-scope scan warnings prevent a complete destination candidate.')
-                current_entries = tuple(current_entries)
-                outcome = merge_entries(b, current_entries, r, read_bytes=self.snapshots.read_bytes, write_bytes=self.snapshots.write_bytes)
-                expected['directory_inventories'] = self._inventories(root, current_entries, outcome.entries)
-                with self.catalog.connect(write=True) as db:
-                    _, checked_target, checked_base, checked_previous = self._inputs(db, params)
-                    if (checked_target, checked_base, checked_previous) != (target, base_id, previous):
-                        _refuse('INTEGRATION_STALE', 'The task contribution or target changed during preparation.')
-                    for task_id in revisions:
-                        owner = db.execute('SELECT operation_id FROM task_claims WHERE task_id=?', (task_id,)).fetchone()
-                        if owner is None or owner[0] != operation_id:
-                            _refuse('TASK_BUSY', 'The preparation no longer owns its source and target tasks.')
-                    if roots != self._boundaries():
-                        _refuse('INTEGRATION_STALE', 'Protected ownership boundaries changed during preparation.')
-                    fresh = self._expected(db, params, target, roots)
-                    fresh['directory_inventories'] = self._inventories(root, current_entries, outcome.entries)
-                    if fresh != expected:
-                        _refuse('INTEGRATION_STALE', 'Physical identities or replacement inventories changed during preparation.')
-                    observed, warnings = repo.inspect_tree(profile['exclusions'], excluded=excluded)
-                    if warnings or {e.path:_entry_key(e) for e in observed} != {e.path:_entry_key(e) for e in current_entries}:
-                        _refuse('INTEGRATION_STALE', 'Destination bytes changed during preparation.')
-                    purpose = 'workspace' if target.task_id else 'source'
-                    current = self.snapshots.insert(db, current_entries, parent_id=target.head, profile=profile,
-                                                    task_id=target.task_id or task['id'], purpose=purpose)
-                    candidate = self.snapshots.insert(db, outcome.entries, parent_id=current.checkpoint_id, profile=profile,
-                                                      task_id=target.task_id or task['id'], purpose=purpose)
-                    now = self.catalog._now(); plan_id = uuid.uuid4().hex
-                    revision = 1
-                    state = 'conflicted' if outcome.conflicts else 'prepared'
-                    db.execute('INSERT INTO integration_plans VALUES (?,?,?,?,?,?,?,?,?)',
-                               (plan_id, task['id'], params['result'], target.key, target.task_id, state, revision, now, now))
-                    token = hashlib.sha256(canonical(dict(plan=plan_id, revision=revision, expected=expected,
-                        base=asdict(base), incoming=asdict(incoming), current=asdict(current), candidate=asdict(candidate))).encode()).hexdigest()
-                    db.execute('INSERT INTO integration_revisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                        (plan_id, revision, base.checkpoint_id, incoming.checkpoint_id, current.checkpoint_id,
-                         candidate.checkpoint_id, previous, canonical(profile), canonical(expected), candidate.manifest_sha256, token, now, now))
-                    self._decisions(db, plan_id, revision, b, current_entries, r, outcome)
-                    for role, version in (('base', base), ('incoming', incoming), ('current', current), ('candidate', candidate)):
-                        db.execute('INSERT INTO integration_refs VALUES (?,?,?,?)', (version.checkpoint_id, plan_id, role, now))
-                    self.catalog._transition(db, operation_id, 'succeeded', result=dict(plan_id=plan_id, revision=revision,
-                        state=state, task_id=task['id'], conflict_count=len(outcome.conflicts), checks='not_run_by_solace'), kind='integration.prepared')
-                    self.tasks.release(db, operation_id)
+            if receipt:
                 self.catalog.notify()
-                return PreparedPlan(plan_id, revision, state, task['id'], params['result'], target, base, incoming, current, candidate, outcome.conflicts)
+                return self.load(receipt['plan_id'], receipt['revision'])
+            profile = json.loads(task['profile_json'])
+            base = self.snapshots.version(base_id, profile)
+            incoming = self.snapshots.version(params['result'], profile)
+            b, r = self.snapshots.entries(base), self.snapshots.entries(incoming)
+            roots = self._boundaries()
+            root = Path(target.identity.path)
+            self._protected_delta(root, profile, roots, b, r)
+            with self.catalog.connect() as db:
+                expected = self._expected(db, params, target, roots)
+            repo = ProjectRepository.open_existing(root, self.catalog.store)
+            excluded = self._excluder(root, profile, roots)
+            current_entries, warnings = repo._scan(profile['exclusions'], excluded=excluded)
+            if warnings:
+                _refuse('INTEGRATION_CAPTURE_INCOMPLETE', 'In-scope scan warnings prevent a complete destination candidate.')
+            current_entries = tuple(current_entries)
+            outcome = merge_entries(b, current_entries, r, read_bytes=self.snapshots.read_bytes, write_bytes=self.snapshots.write_bytes)
+            expected['directory_inventories'] = self._inventories(root, current_entries, outcome.entries)
+            purpose = 'workspace' if target.task_id else 'source'
+            verified_current = self.snapshots.verify_snapshot(current_entries,parent_id=target.head,profile=profile,
+                task_id=target.task_id or task['id'],purpose=purpose)
+            verified_candidate = self.snapshots.verify_snapshot(outcome.entries,parent_id=verified_current.checkpoint_id,profile=profile,
+                task_id=target.task_id or task['id'],purpose=purpose)
+            # Durable tree/task claims protect this live reinspection. No global
+            # lock or writer transaction is held while bytes are hashed.
+            inventories = self._inventories(root,current_entries,outcome.entries)
+            observed,warnings = repo.inspect_tree(profile['exclusions'],excluded=excluded)
+            if warnings or {e.path:_entry_key(e) for e in observed} != {e.path:_entry_key(e) for e in current_entries}:
+                _refuse('INTEGRATION_STALE','Destination bytes changed during preparation.')
+            with self.paths.registry.lock, self.coordinator.lock, self.catalog.connect(write=True) as db:
+                _, checked_target, checked_base, checked_previous = self._inputs(db, params)
+                if (checked_target, checked_base, checked_previous) != (target, base_id, previous):
+                    _refuse('INTEGRATION_STALE', 'The task contribution or target changed during preparation.')
+                for task_id in revisions:
+                    owner = db.execute('SELECT operation_id FROM task_claims WHERE task_id=?', (task_id,)).fetchone()
+                    if owner is None or owner[0] != operation_id:
+                        _refuse('TASK_BUSY', 'The preparation no longer owns its source and target tasks.')
+                if roots != self._boundaries():
+                    _refuse('INTEGRATION_STALE', 'Protected ownership boundaries changed during preparation.')
+                fresh = self._expected(db, params, target, roots)
+                fresh['directory_inventories'] = inventories
+                if fresh != expected:
+                    _refuse('INTEGRATION_STALE', 'Physical identities or replacement inventories changed during preparation.')
+                current = self.snapshots.insert_verified(db,verified_current)
+                candidate = self.snapshots.insert_verified(db,verified_candidate)
+                now = self.catalog._now(); plan_id = uuid.uuid4().hex
+                revision = 1
+                state = 'conflicted' if outcome.conflicts else 'prepared'
+                db.execute('INSERT INTO integration_plans VALUES (?,?,?,?,?,?,?,?,?)',
+                           (plan_id, task['id'], params['result'], target.key, target.task_id, state, revision, now, now))
+                token = hashlib.sha256(canonical(dict(plan=plan_id, revision=revision, expected=expected,
+                    base=asdict(base), incoming=asdict(incoming), current=asdict(current), candidate=asdict(candidate))).encode()).hexdigest()
+                db.execute('INSERT INTO integration_revisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (plan_id, revision, base.checkpoint_id, incoming.checkpoint_id, current.checkpoint_id,
+                     candidate.checkpoint_id, previous, canonical(profile), canonical(expected), candidate.manifest_sha256, token, now, now))
+                self._decisions(db, plan_id, revision, b, current_entries, r, outcome)
+                for role, version in (('base', base), ('incoming', incoming), ('current', current), ('candidate', candidate)):
+                    db.execute('INSERT INTO integration_refs VALUES (?,?,?,?)', (version.checkpoint_id, plan_id, role, now))
+                self.catalog._transition(db, operation_id, 'succeeded', result=dict(plan_id=plan_id, revision=revision,
+                    state=state, task_id=task['id'], conflict_count=len(outcome.conflicts), checks='not_run_by_solace'), kind='integration.prepared')
+                IntegrationClaims(self.service,self.catalog).release(db,operation_id)
+            self.catalog.notify()
+            return PreparedPlan(plan_id, revision, state, task['id'], params['result'], target, base, incoming, current, candidate, outcome.conflicts)
         except Exception as error:
             failure = classify(error)
             # If failure persistence is itself unavailable, rollback leaves the
@@ -287,7 +307,8 @@ class IntegrationPlans:
                 operation = db.execute('SELECT state FROM operations WHERE id=?', (operation_id,)).fetchone()
                 if operation and operation[0] in ('queued', 'running'):
                     self.catalog._transition(db, operation_id, 'failed', error=failure.as_dict())
-                    self.tasks.release(db, operation_id)
+                    from .integration_claims import IntegrationClaims
+                    IntegrationClaims(self.service,self.catalog).release(db,operation_id)
             self.catalog.notify()
             raise failure from error
 
@@ -331,7 +352,10 @@ class IntegrationPlans:
             for decision in db.execute("SELECT path,reason,decision_json FROM integration_decisions WHERE plan_id=? AND revision=? AND kind='conflict' ORDER BY path", (plan_id, revision)):
                 data = json.loads(decision[2])
                 conflicts.append(MergeConflict(decision[0], decision[1], *(entry_from_json(data[name]) for name in ('base', 'current', 'incoming'))))
-        return PreparedPlan(plan_id, revision, plan['state'], plan['task_id'], plan['result_id'], target, *versions, tuple(conflicts))
+        retained = PreparedPlan(plan_id, revision, plan['state'], plan['task_id'], plan['result_id'], target, *versions, tuple(conflicts))
+        if review_token(retained, expected) != row['review_token']:
+            _refuse('INTEGRATION_MANIFEST_INVALID', 'The retained versions no longer match their original review binding.')
+        return retained
 
     def abandon(self, request: dict) -> dict:
         require_integrations(self.catalog)

@@ -11,7 +11,7 @@ import tempfile
 
 from solace_engine.models import FileEntry
 from .errors import CoreError, classify, invalid
-from .integration_plans import IntegrationPlans
+from .integration_plans import IntegrationPlans, review_token
 from .integration_snapshots import canonical
 from .integration_types import MergeOutcome
 from .observations import encoded_size, SUMMARY_BYTES, PAGE_BYTES
@@ -22,13 +22,6 @@ from .workspace_trees import tree_directory, _rename_noreplace
 
 _CONTENT_BYTES = 48 * 1024
 _VERSIONS = ('base', 'current', 'incoming', 'candidate')
-
-
-def review_token(plan, expected):
-    """Bind the exact retained versions and sorted target/ownership expectations."""
-    value = dict(plan=plan.id, revision=plan.revision, expected=expected,
-                 **{name: asdict(getattr(plan, name)) for name in _VERSIONS})
-    return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
 def _bounded(value, ceiling):
@@ -159,12 +152,6 @@ class IntegrationReview:
     def _content(self, plan, revision, params):
         path = _path(params['path']); offset = _integer(params.get('offset', 0))
         retained = self.plans.load(plan['id'], plan['current_revision'])
-        # Shared loading verifies profiles, totals and complete link graphs. The
-        # original token also authenticates B/C/R digests, which are bound there
-        # rather than stored in separate revision columns like the M digest.
-        if review_token(retained, json.loads(revision['expected_json'])) != revision['review_token']:
-            raise CoreError('INTEGRATION_MANIFEST_INVALID', 'The retained versions no longer match their review binding.',
-                            'Preserve the store and inspect the retained plan.')
         version = getattr(retained, params['version'])
         value = next((entry for entry in self.snapshots.entries(version) if entry.path == path), None)
         if value is None:
@@ -232,7 +219,7 @@ class IntegrationReview:
 
     def resolve(self, request):
         params = request['params']; require_integrations(self.catalog)
-        with self.paths.registry.lock, self.plans.coordinator.lock, self.catalog.connect(write=True) as db:
+        with self.catalog.connect() as db:
             cached = self.tasks.lookup_request(request, db)
             if cached is not None: return cached
             header, row = self._header(db, params['plan'], params['revision'])
@@ -243,7 +230,12 @@ class IntegrationReview:
                 raise invalid('Select exactly one of current, incoming, delete or an edited regular file.')
             if db.execute("SELECT 1 FROM integration_decisions WHERE plan_id=? AND path=? AND kind='conflict' LIMIT 1", (header['id'], path)).fetchone() is None:
                 raise CoreError('INTEGRATION_CONFLICT_NOT_FOUND', 'This path has never been a conflict in the retained plan.', 'Resolve a path reported as conflicted.')
-            plan = self.plans.load(header['id'])
+        plan = self.plans.load(header['id'],params['revision'])
+        from .integration_claims import IntegrationClaims
+        claims=IntegrationClaims(self.service,self.catalog)
+        read_paths=[plan.target.identity.path]
+        if 'from_file' in params: read_paths.append(str(_absolute(params['from_file'])))
+        with claims.read_access(read_paths):
             versions = {name: self.snapshots.entries(getattr(plan, name)) for name in _VERSIONS}
             candidate = {entry.path:entry for entry in versions['candidate']}
             affected = {name for name in candidate if name == path or name.startswith(path+'/') or path.startswith(name+'/')}
@@ -259,40 +251,48 @@ class IntegrationReview:
             candidate.update((entry.path,entry) for entry in selected)
             entries = tuple(candidate[name] for name in sorted(candidate))
             # Verification includes the full graph, including unchanged symlinks.
-            self.snapshots._verify(entries)
+            verified = self.snapshots.verify_snapshot(entries,parent_id=plan.current.checkpoint_id,
+                profile=json.loads(row['profile_json']),task_id=plan.target.task_id or plan.task_id,
+                purpose='workspace' if plan.target.task_id else 'source')
             expected = json.loads(row['expected_json'])
             profile = json.loads(row['profile_json'])
             self.plans._protected_delta(Path(plan.target.identity.path), profile, expected['protected_roots'], versions['current'], entries)
             expected['directory_inventories'] = self.plans._inventories(Path(plan.target.identity.path), versions['current'], entries)
             conflicts = tuple(conflict for conflict in plan.conflicts if not (conflict.path == path or conflict.path.startswith(path+'/') or path.startswith(conflict.path+'/')))
             revision = plan.revision+1; now = self.catalog._now()
-            version = self.snapshots.insert(db, entries, parent_id=plan.current.checkpoint_id, profile=profile,
-                task_id=plan.target.task_id or plan.task_id, purpose='workspace' if plan.target.task_id else 'source')
-            revised = replace(plan, revision=revision, candidate=version, conflicts=conflicts, state='conflicted' if conflicts else 'prepared')
-            token = review_token(revised, expected)
-            db.execute('INSERT INTO integration_revisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                (plan.id,revision,plan.base.checkpoint_id,plan.incoming.checkpoint_id,plan.current.checkpoint_id,
-                 version.checkpoint_id,row['previous_receipt_id'],row['profile_json'],canonical(expected),version.manifest_sha256,token,now,now))
-            self.plans._decisions(db,plan.id,revision,versions['base'],versions['current'],versions['incoming'],MergeOutcome(entries,conflicts))
-            prior = {}
-            for decision in db.execute('SELECT path,decision_json FROM integration_decisions WHERE plan_id=? AND revision=?', (plan.id,plan.revision)):
-                data = json.loads(decision['decision_json'])
-                if 'resolution' in data:
-                    prior[decision['path']] = data['resolution']
-            # Preserve explicit choices in the complete new decision set.
-            for decision in db.execute('SELECT path,decision_json FROM integration_decisions WHERE plan_id=? AND revision=?', (plan.id,revision)).fetchall():
-                selected_path = decision['path'] == path or decision['path'].startswith(path+'/') or decision['path'] in affected
-                if selected_path or decision['path'] in prior:
+            with self.paths.registry.lock, self.plans.coordinator.lock, self.catalog.connect(write=True) as db:
+                cached=self.tasks.lookup_request(request,db)
+                if cached is not None: return cached
+                current_header,_ = self._header(db,plan.id,params['revision'])
+                if current_header['state'] not in ('conflicted','prepared','approved'):
+                    raise CoreError('INTEGRATION_STATE_INVALID','The draft changed state while resolution was being read.',
+                                    'Inspect the retained plan before resolving again.')
+                version = self.snapshots.insert_verified(db,verified)
+                revised = replace(plan, revision=revision, candidate=version, conflicts=conflicts, state='conflicted' if conflicts else 'prepared')
+                token = review_token(revised, expected)
+                db.execute('INSERT INTO integration_revisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (plan.id,revision,plan.base.checkpoint_id,plan.incoming.checkpoint_id,plan.current.checkpoint_id,
+                     version.checkpoint_id,row['previous_receipt_id'],row['profile_json'],canonical(expected),version.manifest_sha256,token,now,now))
+                self.plans._decisions(db,plan.id,revision,versions['base'],versions['current'],versions['incoming'],MergeOutcome(entries,conflicts))
+                prior = {}
+                for decision in db.execute('SELECT path,decision_json FROM integration_decisions WHERE plan_id=? AND revision=?', (plan.id,plan.revision)):
                     data = json.loads(decision['decision_json'])
-                    data['resolution'] = resolution if selected_path else prior[decision['path']]
-                    db.execute("UPDATE integration_decisions SET kind='resolved',reason=NULL,decision_json=? WHERE plan_id=? AND revision=? AND path=?",
-                               (canonical(data),plan.id,revision,decision['path']))
-            db.execute('INSERT INTO integration_refs VALUES (?,?,?,?)', (version.checkpoint_id,plan.id,'candidate',now))
-            db.execute('UPDATE integration_plans SET state=?,current_revision=?,updated_at=? WHERE id=?', (revised.state,revision,now,plan.id))
-            new_header, new_row = self._header(db,plan.id)
-            result = self._summary(db,new_header,new_row)
-            self.tasks.event(db,request,'integration.resolved','succeeded',dict(plan_id=plan.id,revision=revision))
-            self.tasks.save_request(db,request,result)
+                    if 'resolution' in data:
+                        prior[decision['path']] = data['resolution']
+                # Preserve explicit choices in the complete new decision set.
+                for decision in db.execute('SELECT path,decision_json FROM integration_decisions WHERE plan_id=? AND revision=?', (plan.id,revision)).fetchall():
+                    selected_path = decision['path'] == path or decision['path'].startswith(path+'/') or decision['path'] in affected
+                    if selected_path or decision['path'] in prior:
+                        data = json.loads(decision['decision_json'])
+                        data['resolution'] = resolution if selected_path else prior[decision['path']]
+                        db.execute("UPDATE integration_decisions SET kind='resolved',reason=NULL,decision_json=? WHERE plan_id=? AND revision=? AND path=?",
+                                   (canonical(data),plan.id,revision,decision['path']))
+                db.execute('INSERT INTO integration_refs VALUES (?,?,?,?)', (version.checkpoint_id,plan.id,'candidate',now))
+                db.execute('UPDATE integration_plans SET state=?,current_revision=?,updated_at=? WHERE id=?', (revised.state,revision,now,plan.id))
+                new_header, new_row = self._header(db,plan.id)
+                result = self._summary(db,new_header,new_row)
+                self.tasks.event(db,request,'integration.resolved','succeeded',dict(plan_id=plan.id,revision=revision))
+                self.tasks.save_request(db,request,result)
         self.catalog.notify()
         return result
 
@@ -330,66 +330,70 @@ class IntegrationReview:
         params = request['params']; require_integrations(self.catalog)
         reserved = False
         try:
+            with self.catalog.connect() as db:
+                retained = rowdict(db,'SELECT * FROM integration_exports WHERE operation_id=?',(operation_id,))
+                if retained:
+                    return _bounded(dict(operation_id=operation_id,plan_id=retained['plan_id'],revision=retained['revision'],
+                        path=retained['path'],phase=retained['phase']),SUMMARY_BYTES)
+                self._header(db,params['plan'],params['revision'])
+            # Immutable authentication may be expensive; no placement lock is held.
+            plan = self.plans.load(params['plan'],params['revision'])
+            versions = {name:self.snapshots.entries(getattr(plan,name)) for name in _VERSIONS}
+            destination = _absolute(params['destination'])
+            staging = destination.parent/('.solace-export-'+operation_id)
             with self.paths.registry.lock, self.plans.coordinator.lock:
-                with self.catalog.connect() as db:
-                    retained = rowdict(db,'SELECT * FROM integration_exports WHERE operation_id=?',(operation_id,))
-                    if retained:
-                        # Restart and retries inspect retained intent; never resume writes.
-                        return _bounded(dict(operation_id=operation_id,plan_id=retained['plan_id'],revision=retained['revision'],
-                            path=retained['path'],phase=retained['phase']),SUMMARY_BYTES)
-                    self._header(db,params['plan'],params['revision'])
-                destination = _absolute(params['destination'])
-                staging = destination.parent/('.solace-export-'+operation_id)
                 self._export_location(destination, staging)
-                # Parent must already exist, be writable and traverse no symlinks.
                 with _held_directory(destination.parent) as parent:
-                    if not os.access(destination.parent, os.W_OK | os.X_OK) or not os.fstat(parent).st_mode & 0o222:
+                    if not os.access(destination.parent,os.W_OK|os.X_OK) or not os.fstat(parent).st_mode & 0o222:
                         raise CoreError('PERMISSION_DENIED','The export parent is not writable.','Choose a writable local parent directory.')
-                    plan = self.plans.load(params['plan'])
-                    versions = {name:self.snapshots.entries(getattr(plan,name)) for name in _VERSIONS}
-                    with self.catalog.connect(write=True) as db:
-                        self._header(db,plan.id,params['revision'])
-                        now = self.catalog._now()
-                        db.execute('INSERT INTO integration_exports VALUES (?,?,?,?,?,?)', (operation_id,plan.id,plan.revision,str(destination),None,'reserved'))
-                        for path in (destination,staging):
-                            db.execute('INSERT INTO integration_claims VALUES (?,?,?,?,?)', (str(path),operation_id,'export',None,now))
-                        for name in _VERSIONS:
-                            db.execute('INSERT OR IGNORE INTO integration_refs VALUES (?,?,?,?)', (getattr(plan,name).checkpoint_id,operation_id,'export',now))
-                    reserved = True
-                    os.mkdir(staging.name,mode=0o700,dir_fd=parent); os.fsync(parent)
-                    identity = directory_identity(staging,self.catalog.policy)
-                    with self.catalog.connect(write=True) as db:
-                        db.execute('UPDATE integration_exports SET identity_json=? WHERE operation_id=?', (canonical(identity),operation_id))
-                        db.execute('UPDATE integration_claims SET identity_json=? WHERE path=?', (canonical(identity),str(staging)))
-                    with _held_directory(staging) as tree:
-                        for name in _VERSIONS:
-                            os.mkdir(name,mode=0o700,dir_fd=tree); os.fsync(tree)
-                            with tree_directory(Path(name),root_fd=tree) as subtree:
-                                self._materialize(versions[name],subtree)
-                        os.fsync(tree)
-                    with self.catalog.connect(write=True) as db:
-                        db.execute("UPDATE integration_exports SET phase='staged' WHERE operation_id=?", (operation_id,))
-                    # The registry lock still excludes concurrent core placement.
-                    self.paths.validate(destination,creating=True)
-                    if directory_identity(staging,self.catalog.policy) != identity:
-                        raise CoreError('INTEGRATION_STALE','The export staging identity changed.','Preserve its retained preparation.')
-                    _rename_noreplace(staging.name,destination.name,parent)
-                    published = directory_identity(destination,self.catalog.policy)
-                    if any(published[key] != identity[key] for key in ('mount_id','device','inode')):
-                        raise CoreError('INTEGRATION_STALE','The published export identity changed.','Preserve its retained preparation.')
-                    result = _bounded(dict(operation_id=operation_id,plan_id=plan.id,revision=plan.revision,path=str(destination),phase='published'),SUMMARY_BYTES)
-                # Ancestor verification above must finish before recording success.
+                    parent_identity = directory_identity(destination.parent,self.catalog.policy)
                 with self.catalog.connect(write=True) as db:
-                    db.execute("UPDATE integration_exports SET phase='published',identity_json=? WHERE operation_id=?", (canonical(published),operation_id))
-                    db.execute('UPDATE integration_claims SET identity_json=? WHERE path=?', (canonical(published),str(destination)))
-                    self.catalog._transition(db,operation_id,'succeeded',result=result,kind='integration.exported')
+                    self._header(db,plan.id,params['revision'])
+                    now = self.catalog._now()
+                    db.execute('INSERT INTO integration_exports VALUES (?,?,?,?,?,?)',(operation_id,plan.id,plan.revision,str(destination),None,'reserved'))
+                    for path in (destination,staging):
+                        db.execute('INSERT INTO integration_claims VALUES (?,?,?,?,?)',(str(path),operation_id,'export',None,now))
+                    for name in _VERSIONS:
+                        db.execute('INSERT OR IGNORE INTO integration_refs VALUES (?,?,?,?)',(getattr(plan,name).checkpoint_id,operation_id,'export',now))
+                reserved = True
+            # Durable final and staging claims now exclude conflicting placement.
+            with _held_directory(destination.parent) as parent:
+                if directory_identity(destination.parent,self.catalog.policy) != parent_identity:
+                    raise CoreError('INTEGRATION_STALE','The export parent changed.','Preserve the retained export reservation.')
+                self.paths.assert_access(staging,operation_id=operation_id)
+                os.mkdir(staging.name,mode=0o700,dir_fd=parent); os.fsync(parent)
+                identity = directory_identity(staging,self.catalog.policy)
+                with self.catalog.connect(write=True) as db:
+                    db.execute('UPDATE integration_exports SET identity_json=? WHERE operation_id=?',(canonical(identity),operation_id))
+                    db.execute('UPDATE integration_claims SET identity_json=? WHERE path=?',(canonical(identity),str(staging)))
+                with _held_directory(staging) as tree:
+                    for name in _VERSIONS:
+                        os.mkdir(name,mode=0o700,dir_fd=tree); os.fsync(tree)
+                        with tree_directory(Path(name),root_fd=tree) as subtree:
+                            self._materialize(versions[name],subtree)
+                    os.fsync(tree)
+                with self.catalog.connect(write=True) as db:
+                    db.execute("UPDATE integration_exports SET phase='staged' WHERE operation_id=?",(operation_id,))
+                self.paths.validate(destination,creating=True)
+                self.paths.assert_access(destination,operation_id=operation_id)
+                if directory_identity(staging,self.catalog.policy) != identity:
+                    raise CoreError('INTEGRATION_STALE','The export staging identity changed.','Preserve its retained preparation.')
+                _rename_noreplace(staging.name,destination.name,parent)
+                published = directory_identity(destination,self.catalog.policy)
+                if any(published[key] != identity[key] for key in ('mount_id','device','inode')):
+                    raise CoreError('INTEGRATION_STALE','The published export identity changed.','Preserve its retained preparation.')
+                result = _bounded(dict(operation_id=operation_id,plan_id=plan.id,revision=plan.revision,path=str(destination),phase='published'),SUMMARY_BYTES)
+            with self.catalog.connect(write=True) as db:
+                db.execute("UPDATE integration_exports SET phase='published',identity_json=? WHERE operation_id=?",(canonical(published),operation_id))
+                db.execute('UPDATE integration_claims SET identity_json=? WHERE path=?',(canonical(published),str(destination)))
+                self.catalog._transition(db,operation_id,'succeeded',result=result,kind='integration.exported')
             self.catalog.notify()
             return result
         except Exception as error:
             failure = classify(error)
             with self.catalog.connect(write=True) as db:
                 if reserved:
-                    db.execute("UPDATE integration_exports SET phase='interrupted' WHERE operation_id=?", (operation_id,))
+                    db.execute("UPDATE integration_exports SET phase='interrupted' WHERE operation_id=?",(operation_id,))
                 operation = db.execute('SELECT state FROM operations WHERE id=?',(operation_id,)).fetchone()
                 if operation and operation[0] in ('queued','running'):
                     self.catalog._transition(db,operation_id,'failed',error=failure.as_dict())

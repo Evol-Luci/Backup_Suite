@@ -216,6 +216,12 @@ class ProjectCatalog:
         db.execute('UPDATE operations SET state=?,updated_at=?,result_json=?,error_json=? WHERE id=?',
                    (state,self._now(),json.dumps(result) if result is not None else None,
                     json.dumps(error) if error is not None else None,operation_id))
+        if state in ('succeeded','failed','interrupted') and db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+            # A visible terminal receipt releases ordinary reader ownership in
+            # this same commit. Journals and retained exports keep their claims.
+            db.execute("DELETE FROM integration_claims WHERE operation_id=? AND kind='target' "
+                       'AND NOT EXISTS (SELECT 1 FROM integration_journals WHERE operation_id=?)',
+                       (operation_id,operation_id))
         details = {k:v for k,v in (result or {}).items() if k in ('checkpoint_id','file_count','logical_bytes','task_id','workspace_id','revision')}
         if error:
             details['error_code'] = error['code']
@@ -258,8 +264,23 @@ class ProjectCatalog:
                 self._transition(db, operation, 'interrupted', error=error)
                 if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3):
                     intent=db.execute("SELECT phase FROM workspace_intents WHERE operation_id=? OR recovery_operation_id=?",(operation,operation)).fetchone()
-                    if intent is None or intent[0] in ('committed','abandoned'):
+                    journal=None
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+                        journal=db.execute("SELECT phase FROM integration_journals WHERE operation_id=? AND phase NOT IN ('committed','restored','abandoned')",(operation,)).fetchone()
+                        if journal:
+                            db.execute("UPDATE integration_plans SET state='recovery_required' WHERE id=(SELECT plan_id FROM integration_journals WHERE operation_id=?)",(operation,))
+                            if journal[0] != 'reserved':
+                                db.execute("UPDATE integration_journals SET phase='recovery_required' WHERE operation_id=?",(operation,))
+                        else:
+                            # Read reservations own no displaced files and are safe to release.
+                            db.execute("DELETE FROM integration_claims WHERE operation_id=? AND kind='target'",(operation,))
+                    if not journal and (intent is None or intent[0] in ('committed','abandoned')):
                         db.execute('DELETE FROM task_claims WHERE operation_id=?',(operation,))
+            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+                # Also cover a stop after success commit but before reader cleanup.
+                db.execute("DELETE FROM integration_claims WHERE kind='target' "
+                           "AND operation_id IN (SELECT id FROM operations WHERE state NOT IN ('queued','running')) "
+                           'AND NOT EXISTS (SELECT 1 FROM integration_journals j WHERE j.operation_id=integration_claims.operation_id)')
         if ids:
             self.notify()
         return ids

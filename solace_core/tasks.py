@@ -143,7 +143,19 @@ class TaskCatalog:
             if workspace:
                 from .workspace_paths import directory_identity
                 w=dict(workspace)
+                claims=[]
+                if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+                    from .workspace_paths import overlap
+                    claims=[dict(row) for row in db.execute(
+                        "SELECT c.path,CASE WHEN j.operation_id IS NOT NULL AND o.state='interrupted' THEN 'recovery_required' ELSE j.phase END AS phase FROM integration_claims c "
+                        'JOIN operations o ON o.id=c.operation_id LEFT JOIN integration_journals j ON j.operation_id=c.operation_id')
+                        if overlap(Path(w['path']),Path(row['path']))]
+                availability='unavailable'
                 try:
+                    if claims:
+                        availability=('recovery_required' if any(c['phase']=='recovery_required' for c in claims) else
+                                      ('applying' if any(c['phase'] for c in claims) else 'busy'))
+                        raise CoreError('INTEGRATION_TARGET_BUSY','The tree is reserved.','Inspect its operation.')
                     current=directory_identity(Path(w['path']),self.catalog.policy)
                     available=all(current[k]==w[k] for k in ('path','mount_id','device','inode'))
                 except (OSError,CoreError): available=False
@@ -153,7 +165,7 @@ class TaskCatalog:
                 if observation: observation['stale']=observation['checkpoint_id']!=w['head_checkpoint']
                 task['workspace']=dict(id=w['id'],path=w['path'] if available else None,
                     base_checkpoint=w['base_checkpoint'],head_checkpoint=w['head_checkpoint'],
-                    availability='available' if available else 'unavailable',last_observed=observation)
+                    availability='available' if available else availability,last_observed=observation)
         return task
 
     def list(self,parent=None):

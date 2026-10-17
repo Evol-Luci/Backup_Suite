@@ -5,6 +5,7 @@ from pathlib import Path
 import json
 import os
 import stat
+import sqlite3
 from .errors import CoreError,invalid
 
 
@@ -75,7 +76,7 @@ class WorkspacePaths:
         if any(canonical.is_relative_to(Path(root).resolve()) for root in self.config.sync_roots):
             raise CoreError('UNSUPPORTED_STORAGE','Synchronized workspaces are unsupported.','Choose unsynchronized local storage.')
         self.policy.check(canonical,creating=creating)
-        for project in self.registry.list():
+        for project in self.registry.known_registrations():
             for key in ('root','store'):
                 if overlap(canonical,Path(project[key])):
                     raise CoreError('UNSUPPORTED_STORAGE','The workspace overlaps a registered source or store.','Choose a separate unsynchronized local workspace root.')
@@ -137,7 +138,7 @@ class WorkspacePaths:
         finally: os.close(fd)
         return self.validate(final.parent)
 
-    def managed_locations(self,project_id=None,candidate=None):
+    def managed_locations(self,project_id=None,candidate=None,*,include_read_claims=True):
         """Read authoritative retained catalogs; fail closed if ownership is unknown."""
         from .catalog import ProjectCatalog,readonly_database
         locations=[]
@@ -153,13 +154,49 @@ class WorkspacePaths:
                         for r in db.execute('SELECT staging_path,final_path,workspace_id,phase FROM workspace_intents'):
                             locations += [(Path(path),r[2]) for path in r[:2]
                                           if path and (r[3]!='abandoned' or os.path.lexists(path))]
-            except (CoreError,OSError) as error:
+                        locations += [(Path(r[0]),None) for r in db.execute('SELECT path FROM workspace_caches')]
+                    if version == 3:
+                        for table,column in (('integration_journals','journal_path'),('integration_exports','path')):
+                            locations += [(Path(r[0]),None) for r in db.execute(f'SELECT {column} FROM {table}')]
+                        query = 'SELECT path FROM integration_claims'
+                        if not include_read_claims: query += " WHERE kind!='target'"
+                        locations += [(Path(r[0]),None) for r in db.execute(query)]
+            except (CoreError,OSError,sqlite3.DatabaseError) as error:
                 raise CoreError('STORE_UNAVAILABLE','A retained catalog is unavailable for placement checks.',
                                 'Reconnect its recorded store, or relink it if still registered, before reserving new locations.') from error
             locations.append((Path(record['store']),None))
         return locations
 
+    def active_claims(self,project_id=None,candidate=None):
+        from .catalog import ProjectCatalog, readonly_database
+        claims=[]
+        for record in self.registry.known_registrations():
+            if candidate is not None and record['id']==project_id: record=candidate
+            catalog=ProjectCatalog(record,self.policy)
+            try:
+                catalog.validate(require_root=False)
+                with readonly_database(catalog.database) as db:
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+                        for path,operation,kind,phase in db.execute(
+                            'SELECT c.path,c.operation_id,c.kind,j.phase FROM integration_claims c '
+                            'LEFT JOIN integration_journals j ON c.operation_id=j.operation_id'):
+                            claims.append(dict(path=path,operation_id=operation,kind=kind,phase=phase))
+            except (CoreError,OSError,sqlite3.DatabaseError) as error:
+                raise CoreError('STORE_UNAVAILABLE','Retained ownership cannot be checked.',
+                                'Reconnect the retained store before accessing live trees.') from error
+        return claims
+
+    def assert_access(self,path,*,operation_id=None,project_id=None,candidate=None):
+        accessed=Path(path).absolute()
+        # Match both the recorded spelling and physical spelling. A substituted
+        # symlink cannot transfer ownership away from its recorded location.
+        for claim in self.active_claims(project_id,candidate):
+            if claim['operation_id'] != operation_id and any(overlap(p,Path(claim['path'])) for p in (accessed,accessed.resolve())):
+                raise CoreError('INTEGRATION_TARGET_BUSY','An integration still owns this tree.',
+                                'Inspect integration recovery before using its files.',True)
+
     def assert_unowned(self,path,workspace_id=None):
+        self.assert_access(Path(path))
         canonical=Path(path).resolve()
         if any(overlap(canonical,owned.resolve()) for owned,owner in self.managed_locations()
                if workspace_id is None or owner!=workspace_id):
@@ -168,17 +205,19 @@ class WorkspacePaths:
 
     def guard_source(self,root,project_id=None,candidate=None):
         root=Path(root).resolve()
+        self.assert_access(root,project_id=project_id,candidate=candidate)
         managed=[self.config.workspace_root,self.registry.path.parent/'projects']
         managed += [path for path,owner in self.managed_locations(project_id,candidate)
-                    if not (candidate and owner is None and path==Path(candidate['store']))]
+                    if not (candidate and owner is None and path.is_relative_to(Path(candidate['store'])))]
         if any(overlap(root,path) for path in managed):
             raise CoreError('UNSUPPORTED_STORAGE','The source overlaps Solace workspace or store data.','Choose a separate source directory.')
 
     def guard_store(self,store,project_id=None,candidate=None):
         store=Path(store).resolve()
+        self.assert_access(store,project_id=project_id,candidate=candidate)
         managed=[self.config.workspace_root]
         managed += [path for path,owner in self.managed_locations(project_id,candidate)
-                    if not (candidate and owner is None and path==Path(candidate['store']))]
+                    if not (candidate and owner is None and path.is_relative_to(Path(candidate['store'])))]
         if any(overlap(store,path.resolve()) for path in managed):
             raise CoreError('UNSUPPORTED_STORAGE','The store overlaps retained workspace or store data.',
                             'Choose separate local storage outside all workspaces.')
