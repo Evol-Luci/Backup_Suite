@@ -129,7 +129,7 @@ class IntegrationReview:
             if 'path' in params:
                 if 'revision' not in params or params.get('version') not in _VERSIONS or {'after', 'limit'} & params.keys():
                     raise invalid('Content pages require revision and version, without metadata cursors.')
-                return self._content(db, plan, revision, params)
+                return self._content(plan, revision, params)
             if {'version', 'offset'} & params.keys():
                 raise invalid('Version and offset require explicit content mode with path.')
             after = _integer(params.get('after', 0)); limit = _integer(params.get('limit', 128), 1, 256)
@@ -156,18 +156,23 @@ class IntegrationReview:
                     break
             return _bounded(page, PAGE_BYTES)
 
-    def _content(self, db, plan, revision, params):
+    def _content(self, plan, revision, params):
         path = _path(params['path']); offset = _integer(params.get('offset', 0))
-        checkpoint = revision[params['version']+'_id']
-        entry = rowdict(db, 'SELECT path,kind,mode,size,file_digest FROM file_entries WHERE checkpoint_id=? AND path=?',
-                        (checkpoint, path))
-        if entry is None:
+        retained = self.plans.load(plan['id'], plan['current_revision'])
+        # Shared loading verifies profiles, totals and complete link graphs. The
+        # original token also authenticates B/C/R digests, which are bound there
+        # rather than stored in separate revision columns like the M digest.
+        if review_token(retained, json.loads(revision['expected_json'])) != revision['review_token']:
+            raise CoreError('INTEGRATION_MANIFEST_INVALID', 'The retained versions no longer match their review binding.',
+                            'Preserve the store and inspect the retained plan.')
+        version = getattr(retained, params['version'])
+        value = next((entry for entry in self.snapshots.entries(version) if entry.path == path), None)
+        if value is None:
             raise CoreError('INTEGRATION_PATH_ABSENT', 'The selected path is absent in this version.', 'Choose a version containing the path.')
-        if offset > entry['size']:
+        if offset > value.size:
             raise invalid('Content offset exceeds the exact entry size.')
+        entry = dict(path=value.path, kind=value.kind, mode=value.mode, size=value.size, file_digest=value.file_digest)
         data = bytearray(); position = 0
-        chunks = tuple(row[0] for row in db.execute('SELECT digest FROM chunk_refs WHERE checkpoint_id=? AND path=? ORDER BY ordinal', (checkpoint, path)))
-        value = FileEntry(entry['path'],entry['kind'],entry['mode'],entry['size'],entry['file_digest'],chunks)
         try:
             for block in self.snapshots.iter_bytes(value):
                 start = max(0, offset-position); end = min(len(block), offset+_CONTENT_BYTES-position)

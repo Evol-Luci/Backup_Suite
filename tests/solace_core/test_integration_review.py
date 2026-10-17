@@ -310,3 +310,70 @@ class ReviewTests(IntegrationCase):
                 self.assertEqual(base64.b64decode(page['data']),data[:48*1024])
                 self.export_direct(plan,self.base/'streamed')
         self.assertEqual((self.base/'streamed'/'candidate'/'large').read_bytes(),data)
+
+    def test_content_rejects_valid_replacement_objects_outside_retained_versions(self):
+        plan=self.make_binary_conflict()
+        for name in ('base','current','incoming','candidate'):
+            with self.subTest(version=name):
+                version=getattr(plan,name)
+                entry=next(value for value in self.plans.snapshots.entries(version) if value.path=='data.bin')
+                replacement=b'X'*entry.size
+                digest=self.plans.snapshots.objects.put_bytes(replacement)
+                with self.catalog.connect(write=True) as db:
+                    db.execute('UPDATE file_entries SET file_digest=? WHERE checkpoint_id=? AND path=?',
+                        (digest,version.checkpoint_id,entry.path))
+                    db.execute('DELETE FROM chunk_refs WHERE checkpoint_id=? AND path=?',(version.checkpoint_id,entry.path))
+                    db.execute('INSERT INTO chunk_refs VALUES (?,?,?,?)',(version.checkpoint_id,entry.path,0,digest))
+                try:
+                    # Replacement bytes and whole-file metadata agree; only the
+                    # retained immutable version binding distinguishes corruption.
+                    with self.assertRaises(CoreError) as retained:
+                        self.plans.snapshots.entries(version)
+                    self.assertEqual(retained.exception.code,'INTEGRATION_MANIFEST_INVALID')
+                    with self.assertRaises(CoreError) as content:
+                        self.review.diff(dict(plan=plan.id,revision=1,path=entry.path,version=name))
+                    self.assertEqual(content.exception.code,'INTEGRATION_MANIFEST_INVALID')
+                finally:
+                    with self.catalog.connect(write=True) as db:
+                        db.execute('UPDATE file_entries SET file_digest=? WHERE checkpoint_id=? AND path=?',
+                            (entry.file_digest,version.checkpoint_id,entry.path))
+                        db.execute('DELETE FROM chunk_refs WHERE checkpoint_id=? AND path=?',(version.checkpoint_id,entry.path))
+                        db.executemany('INSERT INTO chunk_refs VALUES (?,?,?,?)',
+                            [(version.checkpoint_id,entry.path,index,value) for index,value in enumerate(entry.chunk_digests)])
+        self.assertEqual((self.root/'data.bin').read_bytes(),b'\0current')
+
+    def test_content_checks_retained_profile_and_checkpoint_totals(self):
+        plan=self.make_binary_conflict()
+        with self.catalog.connect() as db:
+            count=db.execute('SELECT file_count FROM checkpoints WHERE id=?',(plan.candidate.checkpoint_id,)).fetchone()[0]
+        for changed,restored,code in (
+            (('UPDATE checkpoint_context SET profile_json=? WHERE checkpoint_id=?', '{}'),
+             ('UPDATE checkpoint_context SET profile_json=? WHERE checkpoint_id=?',plan.candidate.profile_json),
+             'INTEGRATION_PROFILE_MISMATCH'),
+            (('UPDATE checkpoints SET file_count=? WHERE id=?',count+1),
+             ('UPDATE checkpoints SET file_count=? WHERE id=?',count),'INTEGRATION_MANIFEST_INVALID')):
+            with self.subTest(code=code):
+                with self.catalog.connect(write=True) as db:
+                    db.execute(changed[0],(changed[1],plan.candidate.checkpoint_id))
+                try:
+                    with self.assertRaises(CoreError) as content:
+                        self.review.diff(dict(plan=plan.id,revision=1,path='data.bin',version='candidate'))
+                    self.assertEqual(content.exception.code,code)
+                finally:
+                    with self.catalog.connect(write=True) as db:
+                        db.execute(restored[0],(restored[1],plan.candidate.checkpoint_id))
+
+    def test_content_checks_unchanged_link_graph_outside_requested_path(self):
+        (self.root/'link').symlink_to('data.bin')
+        plan=self.make_binary_conflict()
+        target=b'../outside'; digest=self.plans.snapshots.objects.put_bytes(target)
+        with self.catalog.connect(write=True) as db:
+            db.execute('UPDATE file_entries SET size=?,file_digest=? WHERE checkpoint_id=? AND path=?',
+                (len(target),digest,plan.candidate.checkpoint_id,'link'))
+            db.execute('UPDATE checkpoints SET logical_bytes=logical_bytes+? WHERE id=?',
+                (len(target)-len(b'data.bin'),plan.candidate.checkpoint_id))
+            db.execute('DELETE FROM chunk_refs WHERE checkpoint_id=? AND path=?',(plan.candidate.checkpoint_id,'link'))
+            db.execute('INSERT INTO chunk_refs VALUES (?,?,?,?)',(plan.candidate.checkpoint_id,'link',0,digest))
+        with self.assertRaises(CoreError) as content:
+            self.review.diff(dict(plan=plan.id,revision=1,path='data.bin',version='candidate'))
+        self.assertEqual(content.exception.code,'WORKSPACE_SYMLINK_UNSAFE')
