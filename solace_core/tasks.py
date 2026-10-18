@@ -115,17 +115,35 @@ class TaskCatalog:
         self.catalog.notify()
         return result
 
+    def receive_integration(self,db,task_id,before,after,now):
+        """A child receipt changes only the receiving parent's revision/state."""
+        db.execute("UPDATE tasks SET state=CASE WHEN state='ready' THEN 'active' ELSE state END,"
+                   'revision=revision+1,updated_at=? WHERE id=?',(now,task_id))
+        for checkpoint in (before,after):
+            db.execute("INSERT OR IGNORE INTO task_checkpoint_refs VALUES (?,?, 'head',?)",(task_id,checkpoint,now))
+
     def summary(self,db,task_id):
         task=self.row(db,task_id)
         counts={state:0 for state in STATES}
         for state,count in db.execute('SELECT state,COUNT(*) FROM tasks WHERE parent_id=? GROUP BY state',(task_id,)):
             counts[state]=count
+        application=dict(ready=counts['ready'],applied=0,unapplied=counts['ready'])
+        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+            workspace=db.execute('SELECT id FROM workspaces WHERE task_id=?',(task_id,)).fetchone()
+            if workspace:
+                application['applied']=db.execute("""
+                    SELECT COUNT(*) FROM tasks t WHERE t.parent_id=? AND t.state='ready'
+                    AND EXISTS (SELECT 1 FROM integration_receipts r WHERE r.task_id=t.id
+                        AND r.target_key=? AND r.result_id=(SELECT checkpoint_id FROM task_checkpoint_refs
+                            WHERE task_id=t.id AND role='result' ORDER BY created_at DESC,rowid DESC LIMIT 1))
+                """,(task_id,'workspace:'+workspace[0])).fetchone()[0]
+            application['unapplied']-=application['applied']
         if task['state']=='cancelled': aggregate='cancelled'
         elif task['state']=='blocked' or counts['blocked']: aggregate='blocked'
         elif counts['created'] or counts['active']: aggregate='waiting_for_children'
-        elif task['state']=='ready' and counts['ready']: aggregate='awaiting_integration'
+        elif application['unapplied']: aggregate='awaiting_integration'
         else: aggregate=task['state']
-        return dict(children=counts,aggregate=aggregate)
+        return dict(children=counts,children_application=application,aggregate=aggregate)
 
     def show(self,task_id):
         require_tasks(self.catalog)
@@ -136,6 +154,13 @@ class TaskCatalog:
             task['prompt']=PromptStore(self.catalog,now=self.now).metadata(db,task_id)
             task.update(self.summary(db,task_id))
             task['results']=[r[0] for r in db.execute("SELECT checkpoint_id FROM task_checkpoint_refs WHERE task_id=? AND role='result' ORDER BY created_at,rowid",(task_id,))]
+            task['latest_result_application']=None
+            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+                from .integration_commit import IntegrationCommit
+                parent_workspace=db.execute('SELECT id FROM workspaces WHERE task_id=?',(task['parent_id'],)).fetchone() if task['parent_id'] else None
+                if not task['parent_id'] or parent_workspace:
+                    target_key='workspace:'+parent_workspace[0] if parent_workspace else 'source'
+                    task['latest_result_application']=IntegrationCommit.latest_application(db,task_id,target_key)
             claim=db.execute('SELECT operation_id FROM task_claims WHERE task_id=?',(task_id,)).fetchone()
             task['pending_operation']=claim[0] if claim else None
             workspace=db.execute('SELECT * FROM workspaces WHERE task_id=?',(task_id,)).fetchone()

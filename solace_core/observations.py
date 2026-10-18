@@ -70,3 +70,27 @@ def operation_view(value):
             if isinstance(params.get(key),dict):
                 params[key]={k:v for k,v in params[key].items() if k!='observed_json'}
     return value
+
+
+def decision_page(db,plan_id,revision,*,after=0,limit=128,summary_fields=None):
+    """Page immutable decisions by offset, bounding the complete encoded object."""
+    from .errors import invalid
+    if type(after) is not int or after<0 or type(limit) is not int or not 1<=limit<=256:
+        raise invalid('Decision cursors must be nonnegative integers; limits must be 1–256.')
+    total=db.execute('SELECT COUNT(*) FROM integration_decisions WHERE plan_id=? AND revision=?',(plan_id,revision)).fetchone()[0]
+    if after>total:
+        raise CoreError('CURSOR_INVALID','The decision cursor exceeds retained history.','Start at cursor zero.')
+    result=dict(summary_fields or {},revision=revision,entries=[],total=total,next_after=None)
+    rows=db.execute('SELECT path,kind,reason,decision_json FROM integration_decisions WHERE plan_id=? AND revision=? '
+                    'ORDER BY ordinal LIMIT ? OFFSET ?',(plan_id,revision,limit,after))
+    for row in rows:
+        entry=dict(path=row['path'],kind=row['kind'],reason=row['reason'],**json.loads(row['decision_json']))
+        candidate=dict(result,entries=result['entries']+[entry],next_after=after+len(result['entries'])+1)
+        if encoded_size(candidate)>PAGE_BYTES:
+            if not result['entries']:
+                raise CoreError('RESPONSE_TOO_LARGE','One decision exceeds the page byte limit.','Export the retained plan to inspect complete versions.')
+            break
+        result=candidate
+    consumed=after+len(result['entries'])
+    result['next_after']=consumed if consumed<total and result['entries'] else None
+    return result

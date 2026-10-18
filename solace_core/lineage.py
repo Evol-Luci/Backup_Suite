@@ -18,6 +18,16 @@ class Lineage:
         db.execute("INSERT INTO checkpoint_context VALUES (?,'source',NULL,NULL,?,1)",(checkpoint.id,profile))
         db.execute('UPDATE source_head SET checkpoint_id=? WHERE singleton=1',(checkpoint.id,))
 
+    def publish_integration(self,db,before,after,target):
+        """Expose existing C/M contexts and advance only their logical target."""
+        for checkpoint in (before,after):
+            db.execute('UPDATE checkpoint_context SET published=1 WHERE checkpoint_id=?',(checkpoint,))
+        if target.task_id:
+            db.execute('UPDATE workspaces SET head_checkpoint=?,observed_at=NULL,observed_json=NULL WHERE id=?',
+                       (after,target.key.split(':',1)[1]))
+        else:
+            db.execute('UPDATE source_head SET checkpoint_id=? WHERE singleton=1',(after,))
+
     def published(self,all_workspaces=False):
         with self.catalog.connect() as db:
             contexts={r['checkpoint_id']:dict(r) for r in db.execute('SELECT * FROM checkpoint_context WHERE published=1')}
