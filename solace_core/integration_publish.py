@@ -193,11 +193,9 @@ class IntegrationPublisher:
         for path in list(held.fds):
             if path.is_relative_to(root): directories[path.relative_to(root).as_posix()] = _identity(os.fstat(held.fds[path]))
         removed_dirs = expected['directory_inventories']
-        for name, inventory in removed_dirs.items():
-            fd = held.open(root/name)
-            if not _match(os.fstat(fd), inventory['identity']) or staging_entries(fd) != inventory['entries']:
-                _refuse('The complete replacement directory inventory changed.')
-            directories[name] = _identity(os.fstat(fd))
+        self._check_replacement_inventories(held, root, removed_dirs)
+        for name in removed_dirs:
+            directories[name] = _identity(os.fstat(held.open(root/name)))
         create = []
         for name in sorted(needed, key=lambda p:(p.count('/'), p)):
             path = root/name
@@ -347,6 +345,14 @@ class IntegrationPublisher:
         held.check()
 
     @staticmethod
+    def _check_replacement_inventories(held, root, inventories):
+        for name, inventory in inventories.items():
+            fd = held.open(root/name)
+            if not _match(os.fstat(fd), inventory['identity']) or staging_entries(fd) != inventory['entries']:
+                _refuse('The complete replacement directory inventory changed.')
+        held.check()
+
+    @staticmethod
     def _location(held, journal, endpoint):
         space = endpoint['space']; name = endpoint['name']
         # Values are internal, but reject corrupted records before descriptor traversal.
@@ -365,6 +371,9 @@ class IntegrationPublisher:
             if any(action['phase'] != 'planned' for action in actions): _refuse('Interrupted actions require explicit recovery reconciliation.')
             root = Path(journal.target.path); directories = self._directory_state(intent, actions)
             self._check_directories(held, root, directories)
+            # Refresh every replacement prefix before the first target mutation.
+            # This includes protected/excluded and empty descendants, not just C.
+            self._check_replacement_inventories(held, root, intent['expected']['directory_inventories'])
             with self.catalog.connect(write=True) as db:
                 db.execute("UPDATE integration_journals SET phase='applying' WHERE operation_id=?", (journal.operation_id,))
                 db.execute("UPDATE integration_plans SET state='applying' WHERE id=?", (journal.plan_id,))
@@ -423,6 +432,15 @@ class IntegrationPublisher:
                                (canonical(progress), journal.operation_id, ordinal))
                 self._hit('progress:'+str(ordinal))
 
+    def _verify_scope(self, journal, intent, candidate):
+        root = Path(journal.target.path)
+        profile = json.loads(intent['candidate']['profile_json'])
+        boundaries = self.plans._boundaries(journal.operation_id)
+        repo = ProjectRepository.open_existing(root, self.catalog.store)
+        observed, warnings = repo.inspect_tree(profile['exclusions'], excluded=self.plans._excluder(root, profile, boundaries))
+        if warnings or {e.path:_entry_key(e) for e in observed} != {e.path:_entry_key(e) for e in candidate}:
+            _refuse('The final target does not match the exact candidate.')
+
     def verify_final(self, journal: Journal) -> None:
         with self._failure(journal.operation_id), self._session(journal) as (held, intent, row):
             if row['phase'] not in ('applying', 'files_ready'): _refuse('Final verification requires completed publication actions.')
@@ -443,17 +461,14 @@ class IntegrationPublisher:
             for entry in candidate:
                 path = root/entry.path; fd = held.open(path.parent)
                 self._content(fd, path.name, entry, identities[entry.path], sync=True)
-            profile = json.loads(intent['candidate']['profile_json'])
-            boundaries = self.plans._boundaries(journal.operation_id)
-            repo = ProjectRepository.open_existing(root, self.catalog.store)
-            observed, warnings = repo.inspect_tree(profile['exclusions'], excluded=self.plans._excluder(root, profile, boundaries))
-            if warnings or {e.path:_entry_key(e) for e in observed} != {e.path:_entry_key(e) for e in candidate}:
-                _refuse('The final target does not match the exact candidate.')
+            self._verify_scope(journal, intent, candidate)
             held.check()
             for fd in held.fds.values(): os.fsync(fd)
             held.check()
             self._hit('files_verified')
-            # Revalidate after the full scan and sync boundary, including same-inode edits.
+            # Recheck the complete path set as well as surviving candidate leaves.
+            # An empty candidate still requires a complete absence check.
+            self._verify_scope(journal, intent, candidate)
             for entry in candidate:
                 path = root/entry.path
                 self._content(held.open(path.parent), path.name, entry, identities[entry.path], sync=True)

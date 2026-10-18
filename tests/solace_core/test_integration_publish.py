@@ -225,6 +225,35 @@ class PublishTests(IntegrationCase):
         self.assertEqual((self.root/'file').read_bytes(), b'edited!!')
         self.assert_retained(journal)
 
+    def test_final_verification_rejects_unexpected_leaf_after_boundary(self):
+        _, journal = self.staged_replacement()
+        self.publisher.publish(journal)
+        self.publisher.failpoint = lambda name: (self.root/'foreign').write_bytes(b'foreign') if name == 'files_verified' else None
+        with self.assertRaises(CoreError): self.publisher.verify_final(journal)
+        self.assertEqual((self.root/'foreign').read_bytes(), b'foreign')
+        self.assertEqual((self.root/'file').read_bytes(), b'incoming')
+        self.assertTrue(self.displaced_version_exists(journal, b'original'))
+        self.assert_retained(journal)
+
+    def _reoccupied_deletion_at_final_boundary(self, *, empty_candidate):
+        (self.root/'deleted').write_bytes(b'original')
+        if not empty_candidate: (self.root/'keep').write_bytes(b'keep')
+        plan = self.plan_with(lambda root: (root/'deleted').unlink())
+        reserved = self.reserve(plan); journal = self.publisher.stage(reserved.operation_id, plan)
+        self.publisher.publish(journal)
+        self.assertFalse((self.root/'deleted').exists())
+        self.publisher.failpoint = lambda name: (self.root/'deleted').write_bytes(b'foreign') if name == 'files_verified' else None
+        with self.assertRaises(CoreError): self.publisher.verify_final(journal)
+        self.assertEqual((self.root/'deleted').read_bytes(), b'foreign')
+        self.assertTrue(self.displaced_version_exists(journal, b'original'))
+        self.assert_retained(journal)
+
+    def test_final_verification_rejects_reoccupied_deletion_after_boundary(self):
+        self._reoccupied_deletion_at_final_boundary(empty_candidate=False)
+
+    def test_empty_candidate_rejects_reoccupied_deletion_after_boundary(self):
+        self._reoccupied_deletion_at_final_boundary(empty_candidate=True)
+
     def test_sql_action_substitution_cannot_change_approved_path(self):
         _, journal = self.staged_replacement()
         (self.root/'foreign').write_bytes(b'original')
@@ -406,7 +435,7 @@ class PublishTests(IntegrationCase):
         self.assertFalse(reserved.path.exists())
         self.assertEqual((self.root/'file').read_bytes(), b'original')
 
-    def test_extra_directory_child_blocks_empty_rmdir(self):
+    def test_extra_directory_child_blocks_before_displacement(self):
         (self.root/'dir').mkdir(); (self.root/'dir/child').write_bytes(b'original')
         def edit(root):
             (root/'dir/child').unlink(); (root/'dir').rmdir(); (root/'dir').write_bytes(b'incoming')
@@ -415,7 +444,67 @@ class PublishTests(IntegrationCase):
         (self.root/'dir/foreign').write_bytes(b'foreign')
         with self.assertRaises(CoreError): self.publisher.publish(journal)
         self.assertEqual((self.root/'dir/foreign').read_bytes(), b'foreign')
+        self.assertTrue((self.root/'dir/child').is_file(), 'preflight must leave the original child in place')
+        self.assertEqual((self.root/'dir/child').read_bytes(), b'original')
+        self.assertFalse(self.displaced_version_exists(journal, b'original'))
+        self.assertTrue(all(row['phase'] == 'planned' for row in self.actions(journal)))
+        self.assert_retained(journal)
+
+    def _late_replacement_descendant(self, kind):
+        (self.root/'dir').mkdir(); (self.root/'dir/child').write_bytes(b'original')
+        def edit(root):
+            (root/'dir/child').unlink(); (root/'dir').rmdir(); (root/'dir').write_bytes(b'incoming')
+        plan = self.plan_with(edit, exclusions=['ignored']); reserved = self.reserve(plan)
+        journal = self.publisher.stage(reserved.operation_id, plan)
+        child_inode = (self.root/'dir/child').stat().st_ino
+        foreign = self.root/'dir'/dict(protected='.git', empty='empty', excluded='ignored', special='pipe')[kind]
+        if kind in ('protected', 'empty'): foreign.mkdir()
+        elif kind == 'special': os.mkfifo(foreign)
+        else: foreign.write_bytes(b'excluded')
+        foreign_inode = foreign.lstat().st_ino
+        with self.assertRaises(CoreError): self.publisher.publish(journal)
+        self.assertTrue((self.root/'dir/child').is_file(), 'preflight must leave the original child in place')
+        self.assertEqual((self.root/'dir/child').read_bytes(), b'original')
+        self.assertEqual((self.root/'dir/child').stat().st_ino, child_inode)
+        self.assertEqual(foreign.lstat().st_ino, foreign_inode)
+        self.assertTrue(all(row['phase'] == 'planned' for row in self.actions(journal)))
+        self.assertFalse(self.displaced_version_exists(journal, b'original'))
+        self.assert_retained(journal)
+
+    def test_late_protected_descendant_blocks_before_displacement(self): self._late_replacement_descendant('protected')
+    def test_late_empty_descendant_blocks_before_displacement(self): self._late_replacement_descendant('empty')
+    def test_late_excluded_descendant_blocks_before_displacement(self): self._late_replacement_descendant('excluded')
+    def test_late_special_descendant_blocks_before_displacement(self): self._late_replacement_descendant('special')
+
+    def test_all_replacement_prefixes_are_checked_before_any_displacement(self):
+        for name in ('a', 'b'):
+            (self.root/name).mkdir(); (self.root/name/'child').write_bytes(name.encode())
+        def edit(root):
+            for name in ('a', 'b'):
+                (root/name/'child').unlink(); (root/name).rmdir(); (root/name).write_bytes(b'incoming')
+        plan = self.plan_with(edit); reserved = self.reserve(plan)
+        journal = self.publisher.stage(reserved.operation_id, plan)
+        (self.root/'b/empty').mkdir()
+        with self.assertRaises(CoreError): self.publisher.publish(journal)
+        self.assertTrue((self.root/'a/child').is_file(), 'all prefixes must be checked before the first move')
+        self.assertTrue((self.root/'b/child').is_file())
+        self.assertEqual((self.root/'a/child').read_bytes(), b'a')
+        self.assertEqual((self.root/'b/child').read_bytes(), b'b')
+        self.assertTrue((self.root/'b/empty').is_dir())
+        self.assertTrue(all(row['phase'] == 'planned' for row in self.actions(journal)))
+        self.assert_retained(journal)
+
+    def test_descendant_added_after_preflight_still_blocks_rmdir(self):
+        (self.root/'dir').mkdir(); (self.root/'dir/child').write_bytes(b'original')
+        def edit(root):
+            (root/'dir/child').unlink(); (root/'dir').rmdir(); (root/'dir').write_bytes(b'incoming')
+        plan = self.plan_with(edit); reserved = self.reserve(plan)
+        journal = self.publisher.stage(reserved.operation_id, plan)
+        self.publisher.failpoint = lambda name: (self.root/'dir/foreign').mkdir() if name == 'old_moved:0' else None
+        with self.assertRaises(CoreError): self.publisher.publish(journal)
+        self.assertTrue((self.root/'dir/foreign').is_dir())
         self.assertTrue(self.displaced_version_exists(journal, b'original'))
+        self.assertFalse((self.root/'dir/child').exists())
         self.assert_retained(journal)
 
     def _blocked_directory(self, child):
