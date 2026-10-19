@@ -389,3 +389,57 @@ class RecoveryTests(IntegrationCase):
         _,_,done=self.recover(journal)
         self.assertEqual(done['state'],'succeeded',done)
         self.assertEqual((foreign/'keep').read_bytes(),b'foreign')
+
+    def moved_restoration(self, point):
+        _,journal=self.staged_replacement();self.interrupt(journal,'new_published:1')
+        original=self.catalog.get_operation(journal.operation_id)
+        def crash(name):
+            if name==point:raise SystemExit('interrupted inverse move')
+        self.recovery.publisher.failpoint=crash
+        with self.assertRaises(SystemExit):self.recover(journal,'restore-before')
+        self.restart()
+        old=self.registry.get(self.project)
+        moved=self.base/'moved-source';store=self.base/'moved-store';moved_journal=self.base/('moved-'+journal.path.name)
+        self.root.rename(moved);Path(old['store']).rename(store);journal.path.rename(moved_journal)
+        self.call('project.relink',project=self.project,root=str(moved),store=str(store),confirmed_root=str(moved))
+        self.restart()
+        self.assertFalse((moved/'file').exists())
+        with self.assertRaises(CoreError):self.service.workspace_paths.assert_access(moved)
+        return journal,original,moved,moved_journal
+
+    def finish_moved_restoration(self, point):
+        journal,original,moved,moved_journal=self.moved_restoration(point)
+        with self.catalog.connect() as db:
+            original_intent=db.execute('SELECT intent_json FROM integration_journals WHERE operation_id=?',(journal.operation_id,)).fetchone()[0]
+            approvals=[tuple(row) for row in db.execute('SELECT * FROM integration_approvals')]
+        _,_,done=self.recover(journal,'restore-before',target_path=str(moved),journal_path=str(moved_journal),confirmed_target=str(moved),confirmed_journal=str(moved_journal))
+        self.assertEqual(done['state'],'succeeded',done)
+        with self.catalog.connect() as db:
+            self.assertEqual(db.execute('SELECT intent_json FROM integration_journals WHERE operation_id=?',(journal.operation_id,)).fetchone()[0],original_intent)
+            self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM integration_approvals')],approvals)
+        self.assertEqual((moved/'file').read_bytes(),b'original')
+        self.assertTrue(any(p.read_bytes()==b'incoming' for p in moved_journal.iterdir() if p.is_file() and p.name.startswith('restore-')))
+        self.assertEqual(self.catalog.get_operation(journal.operation_id),original)
+        self.service.workspace_paths.assert_access(moved)
+
+    def test_moved_restoration_reconciles_move_before_progress(self):
+        self.finish_moved_restoration('restore_changed:0')
+
+    def test_moved_restoration_reconciles_progress_before_crash(self):
+        self.finish_moved_restoration('restore_progress:0')
+
+    def test_moved_restoration_refuses_mismatched_inverse_marker_before_handoff(self):
+        journal,original,moved,moved_journal=self.moved_restoration('restore_progress:0')
+        marker=next(moved_journal.glob('restore-*.done.json'))
+        value=json.loads(marker.read_text());value['record']['destination']['name']='foreign'
+        marker.write_text(json.dumps(value))
+        preserved={str(path.relative_to(moved_journal)):path.read_bytes() for path in moved_journal.rglob('*') if path.is_file()}
+        with self.assertRaisesRegex(CoreError,'Restoration completion marker changed'):
+            self.recover(journal,'restore-before',target_path=str(moved),journal_path=str(moved_journal),confirmed_target=str(moved),confirmed_journal=str(moved_journal))
+        self.assertFalse((moved/'file').exists())
+        self.assertEqual(self.catalog.get_operation(journal.operation_id),original)
+        with self.catalog.connect() as db:
+            row=db.execute('SELECT journal_path FROM integration_journals WHERE operation_id=?',(journal.operation_id,)).fetchone()
+            self.assertEqual(row[0],str(journal.path))
+        self.assertEqual({str(path.relative_to(moved_journal)):path.read_bytes() for path in moved_journal.rglob('*') if path.is_file()},preserved)
+        with self.assertRaises(CoreError):self.service.workspace_paths.assert_access(moved)

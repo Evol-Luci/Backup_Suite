@@ -323,7 +323,11 @@ class IntegrationRecovery:
         if mapping['state']=='applied': return
         # The immutable marker, slots, every old/new state and current protected
         # boundaries must be proven before publishing any new path metadata.
-        self._reconcile(journal,persist=False)
+        if location.get('restoration'):
+            with self.publisher._session(journal) as (held,physical,_):
+                self._inspect_restoration(held,journal,physical,location['restoration'])
+        else:
+            self._reconcile(journal,persist=False)
         with self.service.registry.lock, self.service.coordinator(self.catalog.registration['id']).lock:
             self._validate_mapping(intent,journal,mapping,requested)
             owner=self._handoff_ownership(row,intent,journal)
@@ -457,6 +461,69 @@ class IntegrationRecovery:
                               mode=stat.S_IMODE(before['identity']['mode']) if action['kind']=='rmdir' else None))
         return steps
 
+    def _inspect_restoration(self, held, journal, intent, restoration):
+        """Authenticate and normalize inverse evidence without writing any files."""
+        actions=self.publisher._actions(journal.operation_id)
+        self.publisher._validate_actions(intent,actions)
+        fd=held.open(journal.path)
+        # Forward progress was reconciled before restoration began. Authenticate
+        # those markers, but never demand their superseded physical post-state.
+        for action in actions:
+            record=self._record(action)
+            saved=self._read_optional(fd,f"{action['ordinal']}.intent.json")
+            done=self._read_optional(fd,f"{action['ordinal']}.done.json")
+            if action['phase']=='planned':
+                if saved is not None or done is not None: _refuse('Unreconciled publication evidence during restoration.')
+            elif saved!=record: _refuse('Publication intent changed during restoration.')
+            if action['phase']=='done':
+                if done!=dict(record=record,observed=json.loads(action['observed_json'])):
+                    _refuse('Publication completion changed during restoration.')
+            elif done is not None: _refuse('Unreconciled publication completion during restoration.')
+        restored=copy.deepcopy(restoration)
+        with self.catalog.connect() as db:
+            owner=db.execute('SELECT original_operation_id,mode FROM integration_recoveries WHERE operation_id=?',(restored['owner'],)).fetchone()
+        if owner is None or tuple(owner)!=(journal.operation_id,'restore-before'):
+            _refuse('Restoration lacks its original recovery owner.')
+        expected=self._restore_steps(restored['owner'],actions)
+        if len(expected)!=len(restored['steps']): _refuse('The restoration action list changed.')
+        lag=[];incomplete=False
+        for step,wanted in zip(restored['steps'],expected):
+            if any(step.get(k)!=v for k,v in wanted.items() if k not in ('phase','observed')):
+                _refuse('A restoration step differs from the exact inverse publication.')
+            if step['phase'] not in ('planned','intent','done'): _refuse('Invalid restoration progress.')
+            marker='restore-'+restored['owner']+'-'+str(step['ordinal'])
+            before,after=step['source'],step['destination']
+            record=dict(kind=step['kind'],source=before,destination=after,mode=step['mode'])
+            saved=self._read_optional(fd,marker+'.intent.json')
+            done=self._read_optional(fd,marker+'.done.json')
+            if saved is not None and saved!=record: _refuse('Restoration intent marker changed.')
+            if saved is None and step['phase']!='planned': _refuse('Restoration progress lacks its durable intent.')
+            if done is not None:
+                if saved is None or done.get('record')!=record: _refuse('Restoration completion marker changed.')
+                observed=done.get('observed')
+                if (step['kind']!='mkdir' and observed!=after['identity']) or (step['kind']=='mkdir' and not observed):
+                    _refuse('Restoration completion does not identify its recorded version.')
+                if step['phase']=='done' and step['observed']!=observed:
+                    _refuse('Restoration SQL and marker progress disagree.')
+                step.update(phase='done',observed=observed)
+            elif step['phase']=='done': _refuse('A completed restoration action lost its durable marker.')
+            elif saved is not None:
+                if incomplete: _refuse('Multiple unresolved restoration intents are ambiguous.')
+                sf,sn,sm=self._physical(held,journal,before['space'],before['name'])
+                df,dn,dm=self._physical(held,journal,after['space'],after['name'])
+                if sf is None or df is None: _refuse('A restoration parent is unavailable.')
+                completed=(step['kind']=='move' and sm is None and _match(dm,after['identity']) or step['kind']=='rmdir' and sm is None)
+                if step['kind']=='mkdir' and sm is not None: _refuse('A restored directory lacks a recorded inode; preserve it for inspection.')
+                if completed:
+                    step.update(phase='done',observed=after['identity'])
+                    lag.append((marker,record,step['observed']))
+                else: step['phase']='intent'
+            if step['phase']=='done':
+                if incomplete: _refuse('Completed restoration actions are not an ordered prefix.')
+            else: incomplete=True
+        self._verify_restoration(held,journal,intent,actions,restored)
+        return restored,lag
+
     def _restore(self, operation, journal, location):
         with self.publisher._session(journal) as (held,intent,row):
             actions=self.publisher._actions(journal.operation_id)
@@ -465,16 +532,16 @@ class IntegrationRecovery:
                 steps=self._restore_steps(operation,actions)
                 location['restoration']=dict(owner=operation,steps=steps)
                 location['phase']='restoring';self._save(operation,location)
-            restoration=location['restoration'];fd=held.open(journal.path)
-            expected=self._restore_steps(restoration['owner'],actions)
-            if len(expected)!=len(restoration['steps']): _refuse('The restoration action list changed.')
-            for actual,wanted in zip(restoration['steps'],expected):
-                if any(actual.get(k)!=v for k,v in wanted.items() if k not in ('phase','observed')):
-                    _refuse('A restoration step differs from the exact inverse publication.')
-                if actual['phase'] not in ('planned','intent','done'): _refuse('Invalid restoration progress.')
-                if actual['phase']=='done' and actual['kind']!='mkdir' and actual['observed']!=actual['destination']['identity']:
-                    _refuse('Restoration progress has inconsistent identity evidence.')
+            restoration,lag=self._inspect_restoration(held,journal,intent,location['restoration'])
+            fd=held.open(journal.path)
+            # Validation is read-only during handoff. Persist normalized inverse
+            # progress here, after syncing both directories of every lagged move.
+            for descriptor in held.fds.values(): os.fsync(descriptor)
+            for marker,record,observed in lag:
+                self.publisher._record(fd,marker+'.done.json',dict(record=record,observed=observed))
+            location['restoration']=restoration;self._save(operation,location)
             for step in restoration['steps']:
+                if step['phase']=='done': continue
                 marker='restore-'+restoration['owner']+'-'+str(step['ordinal'])
                 before,after=step['source'],step['destination']
                 sf,sn,sm=self._physical(held,journal,before['space'],before['name'])
@@ -482,27 +549,6 @@ class IntegrationRecovery:
                 if sf is None or df is None: _refuse('A restoration parent is unavailable.')
                 record=dict(kind=step['kind'],source=before,destination=after,mode=step['mode'])
                 saved=self._read_optional(fd,marker+'.intent.json')
-                done=self._read_optional(fd,marker+'.done.json')
-                if saved is not None and saved!=record: _refuse('Restoration intent marker changed.')
-                if done is not None:
-                    if saved is None or done.get('record')!=record: _refuse('Restoration completion marker changed.')
-                    if step['kind']!='mkdir' and done.get('observed')!=after['identity']:
-                        _refuse('Restoration completion does not identify its recorded version.')
-                    if step['phase']=='done' and step['observed']!=done.get('observed'):
-                        _refuse('Restoration SQL and marker progress disagree.')
-                    step.update(phase='done',observed=done['observed'])
-                elif step['phase']=='done': _refuse('A completed restoration action lost its durable marker.')
-                if step['phase']=='done': continue
-                if saved is not None:
-                    completed=(step['kind']=='move' and sm is None and _match(dm,after['identity']) or step['kind']=='rmdir' and sm is None)
-                    if step['kind']=='mkdir' and sm is not None: _refuse('A restored directory lacks a recorded inode; preserve it for inspection.')
-                    if completed:
-                        if step['kind']=='move': self.publisher._content(df,dn,entry_from_json(after['entry']),after['identity'],sync=True)
-                        os.fsync(sf);os.fsync(df)
-                        step.update(phase='done',observed=after['identity'])
-                        self.publisher._record(fd,marker+'.done.json',dict(record=record,observed=step['observed']))
-                        self._save(operation,location)
-                        continue
                 self._verify_restoration(held,journal,intent,actions,restoration)
                 if not _match(sm,before['identity']): _refuse('The restoration source changed.')
                 if step['kind']=='move':
@@ -590,4 +636,6 @@ class IntegrationRecovery:
             fd,leaf,meta=self._physical(held,journal,space,name)
             if not _match(meta,expected['identity'] if expected else None): _refuse('Restoration evidence has a missing, replaced or ambiguous entry.')
             if expected and expected['entry']: self.publisher._content(fd,leaf,entry_from_json(expected['entry']),expected['identity'])
+        entries=tuple(entry_from_json(value['entry']) for (space,_),value in state.items() if space=='target' and value and value['entry'])
+        self.publisher._verify_scope(journal,intent,entries)
         held.check()
