@@ -120,6 +120,9 @@ class CoreService:
         from .workspace_paths import directory_identity
         import json
         if schema_version(catalog) not in (2, 3): return
+        if schema_version(catalog) == 3:
+            from .integration_recovery import IntegrationRecovery
+            IntegrationRecovery(self,catalog).reconcile_location(previous,request_id)
         from .workspace_trees import _verify_tree,_targets,_manifest_digest
         from solace_engine.repository import ProjectRepository
         caches=[]
@@ -196,6 +199,7 @@ class CoreService:
                 self.registry.get(project)
                 try:
                     current = self.catalog(project)
+                    current.validate(require_root=False)
                 except Exception as error:
                     code = classify(error).code
                     if code not in {'PROJECT_NOT_FOUND', 'STORE_UNAVAILABLE', 'DATABASE_CORRUPT',
@@ -223,12 +227,8 @@ class CoreService:
                         candidate.update(root=str(Path(p['root']).resolve()),store=str(location.canonical),mount_id=location.mount_id)
                         repair=ProjectCatalog(candidate,self.registry.policy)
                         repair.validate()
-                        # Old pathname claims cannot protect a relocated source.
-                        # Integration relocation needs an explicit durable handoff;
-                        # until then, refuse before recovery or registry mutation.
-                        with repair.connect() as db:
-                            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3 and db.execute("SELECT 1 FROM integration_journals WHERE phase NOT IN ('committed','restored','abandoned')").fetchone():
-                                raise CoreError('INTEGRATION_TARGET_BUSY','Integration recovery still owns this project.','Resolve integration recovery before changing registration.',True)
+                        # Registry receipt plus logical unresolved-journal ownership
+                        # gates the moved aliases until explicit recovery handoff.
                         repair.recover_interrupted()
                     if current is not None:
                         from .schema import schema_version

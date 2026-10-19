@@ -274,9 +274,12 @@ class ProjectCatalog:
                         else:
                             # Read reservations own no displaced files and are safe to release.
                             db.execute("DELETE FROM integration_claims WHERE operation_id=? AND kind='target'",(operation,))
-                    if not journal and (intent is None or intent[0] in ('committed','abandoned')):
+                    export = db.execute("SELECT 1 FROM integration_exports WHERE operation_id=? AND phase!='published'",(operation,)).fetchone() if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3 else None
+                    if not journal and not export and (intent is None or intent[0] in ('committed','abandoned')):
                         db.execute('DELETE FROM task_claims WHERE operation_id=?',(operation,))
             if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+                from .integration_recovery import IntegrationRecovery
+                IntegrationRecovery.classify_interrupted(db)
                 # Also cover a stop after success commit but before reader cleanup.
                 db.execute("DELETE FROM integration_claims WHERE kind='target' "
                            "AND operation_id IN (SELECT id FROM operations WHERE state NOT IN ('queued','running')) "

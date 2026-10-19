@@ -3,7 +3,7 @@
 No file publication, CAS verification, commit or notification occurs here. The
 caller holds the coordinator and has just verified/synced M with the publisher.
 """
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 import uuid
@@ -64,6 +64,9 @@ class IntegrationCommit:
                 json.loads(row['target_identity_json']) != asdict(journal.target)):
             stale('Publication requires this exact verified files-ready journal and revision.')
         expected = json.loads(revision['expected_json'])
+        from .integration_recovery import IntegrationRecovery
+        physical = IntegrationRecovery(self.service,self.catalog).physical_intent(intent,journal)
+        physical_expected = physical['expected']
         value = expected['target']; target = Target(**dict(value, identity=Identity(**value['identity'])))
         versions = [Version(**intent[name]) for name in ('base','incoming','current','candidate')]
         plan = PreparedPlan(header['id'],journal.revision,header['state'],header['task_id'],header['result_id'],target,*versions,())
@@ -73,8 +76,8 @@ class IntegrationCommit:
         if (intent['expected'] != expected or intent['review_token'] != revision['review_token'] or
                 intent['previous_receipt_id'] != revision['previous_receipt_id'] or
                 intent.get('operation_id') != journal.operation_id or intent.get('plan_id') != plan.id or
-                intent.get('revision') != plan.revision or intent.get('target') != asdict(journal.target) or
-                intent.get('journal') != asdict(journal.identity) or target.identity != journal.target or
+                intent.get('revision') != plan.revision or physical.get('target') != asdict(journal.target) or
+                physical.get('journal') != asdict(journal.identity) or physical_expected['target']['identity'] != asdict(journal.target) or
                 header['target_key'] != target.key or header['target_task_id'] != target.task_id or
                 review_token(plan,expected) != revision['review_token'] or
                 plan.candidate.manifest_sha256 != revision['manifest_sha256'] or
@@ -86,6 +89,8 @@ class IntegrationCommit:
                 selected['binding'] != binding or approval['plan_id'] != plan.id or approval['revision'] != plan.revision or
                 approval['accepted_unchecked'] != 1):
             stale('The selected approval does not authorize this exact publication.')
+        target = replace(target, identity=journal.target)
+        plan = replace(plan, target=target)
         task = self.tasks.row(db,plan.task_id)
         if task['revision'] != expected['source_revision'] or json.loads(task['profile_json']) != json.loads(revision['profile_json']):
             stale('The source task revision or profile changed.')
@@ -96,7 +101,7 @@ class IntegrationCommit:
         fresh = self.plans._expected(db,params,fresh_target,roots)
         if (fresh_target != target or base != plan.base.checkpoint_id or previous != revision['previous_receipt_id'] or
                 {k:v for k,v in fresh.items() if k!='directory_inventories'} !=
-                {k:v for k,v in expected.items() if k!='directory_inventories'}):
+                {k:v for k,v in physical_expected.items() if k!='directory_inventories'}):
             stale('Pinned destination identities, heads or contribution ancestry changed.')
         if directory_identity(journal.path,self.catalog.policy) != asdict(journal.identity):
             stale('The verified journal identity changed.')

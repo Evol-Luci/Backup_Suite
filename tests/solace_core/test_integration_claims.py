@@ -114,8 +114,14 @@ class ClaimsTests(IntegrationCase):
         response=self.service.handle(self.request('project.add',root=str(journal.path.parent)))
         self.assertFalse(response['ok'],response)
         with self.catalog.connect(write=True) as db: self.claims().release(db,journal.operation_id)
+        # Removing physical rows cannot release an unresolved logical owner.
+        with self.assertRaises(CoreError) as raised: self.claims().assert_access(self.root)
+        self.assertEqual(raised.exception.code, 'INTEGRATION_TARGET_BUSY')
+        self.plans.abandon(self.request('integration.abandon',plan=plan.id,revision=plan.revision))
+        with self.catalog.connect() as db:
+            self.assertEqual(db.execute('SELECT phase FROM integration_journals WHERE operation_id=?',(journal.operation_id,)).fetchone()[0], 'abandoned')
         self.claims().assert_access(self.root)
-        # Historical journal ownership survives release.
+        # Historical journal ownership survives verified abandonment.
         with self.assertRaises(CoreError): self.service.workspace_paths.assert_unowned(journal.path)
 
     def test_overlapping_sources_and_journal_inside_other_source_are_refused(self):
@@ -258,7 +264,8 @@ class ClaimsTests(IntegrationCase):
     def test_empty_home_git_allows_journal_but_real_marker_refuses(self):
         plan=self.simple_plan(); marker=self.base/'.git';marker.mkdir()
         journal=self.reserve(plan)
-        with self.catalog.connect(write=True) as db:self.claims().release(db,journal.operation_id)
+        self.plans.abandon(self.request('integration.abandon',plan=plan.id,revision=plan.revision))
+        plan=self.prepare_direct(plan.task_id,plan.result_id)
         (marker/'HEAD').write_text('ref: refs/heads/main\n')
         with self.assertRaises(CoreError) as raised:self.reserve(plan)
         self.assertIn(raised.exception.code,('INTEGRATION_JOURNAL_PLACEMENT','INTEGRATION_PLAN_STALE'))
@@ -539,7 +546,7 @@ class ClaimsTests(IntegrationCase):
         with self.catalog.connect() as db:
             self.assertEqual(db.execute('SELECT state,current_revision FROM integration_plans').fetchone()[:],('abandoned',1))
 
-    def test_unavailable_source_and_store_relink_refuses_unresolved_journal(self):
+    def test_unavailable_source_and_store_relink_keeps_unresolved_logical_gate(self):
         from solace_core.service import CoreService
         from solace_core.catalog import ProjectCatalog
         plan=self.simple_plan();journal=self.reserve(plan)
@@ -550,9 +557,9 @@ class ClaimsTests(IntegrationCase):
         self.service=CoreService(self.registry,config=self.config);self.addCleanup(self.service.close)
         request=self.request('project.relink',root=str(moved_root),store=str(moved_store),confirmed_root=str(moved_root))
         response=self.service.handle(request)
-        self.assertFalse(response['ok'],response)
-        self.assertEqual(response['error']['code'],'INTEGRATION_TARGET_BUSY')
-        self.assertEqual(self.registry.get(self.project),registration)
+        self.assertTrue(response['ok'],response)
+        self.assertEqual(self.registry.get(self.project)['root'],str(moved_root))
+        with self.assertRaises(CoreError): self.service.workspace_paths.assert_access(moved_root)
         replacement=ProjectCatalog(dict(registration,root=str(moved_root),store=str(moved_store)),self.policy)
         with replacement.connect() as db:
             self.assertEqual(db.execute('SELECT phase,identity_json FROM integration_journals WHERE operation_id=?',(journal.operation_id,)).fetchone()[:],('reserved',None))

@@ -2,7 +2,8 @@
 
 The apply owner authenticates approval and writer acknowledgement before calling
 stage. This internal publisher requires a committed Task 5 reservation. It never
-releases claims, commits history, resumes an interrupted action or removes evidence.
+releases claims, commits history or removes evidence. Interrupted continuation
+requires a running, durably authorized recovery and full prefix reconciliation.
 """
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -299,11 +300,14 @@ class IntegrationPublisher:
     @contextmanager
     def _session(self, journal):
         row = self._row(journal.operation_id)
-        if (journal.identity is None or row['identity_json'] is None or
-                (row['plan_id'], row['revision'], row['journal_path']) != (journal.plan_id, journal.revision, str(journal.path)) or
-                json.loads(row['identity_json']) != asdict(journal.identity) or json.loads(row['target_identity_json']) != asdict(journal.target)):
+        if journal.identity is None or row['identity_json'] is None or (row['plan_id'],row['revision'])!=(journal.plan_id,journal.revision):
             _refuse('The supplied journal is not the retained physical publication.')
-        intent = json.loads(row['intent_json']); root = Path(journal.target.path)
+        original_intent=json.loads(row['intent_json'])
+        from .integration_recovery import IntegrationRecovery
+        intent=IntegrationRecovery(self.service,self.catalog).physical_intent(original_intent,journal)
+        if intent is original_intent and (row['journal_path']!=str(journal.path) or json.loads(row['identity_json'])!=asdict(journal.identity) or json.loads(row['target_identity_json'])!=asdict(journal.target)):
+            _refuse('The supplied journal identity differs from its reservation.')
+        root = Path(journal.target.path)
         held = _HeldDirectories()
         try:
             for path, identity in ((root.parent, intent['parent_identity']), (root, asdict(journal.target)), (journal.path, asdict(journal.identity))):
@@ -315,7 +319,7 @@ class IntegrationPublisher:
                 if not _match(os.fstat(fd), intent['slots'][name]) or stat.S_IMODE(os.fstat(fd).st_mode) != 0o700:
                     _refuse('A private journal slot directory changed.')
             if stat.S_IMODE(os.fstat(held.open(journal.path)).st_mode) != 0o700: _refuse('The journal is no longer private.')
-            self._read_record(held.open(journal.path), 'intent.json', intent)
+            self._read_record(held.open(journal.path), 'intent.json', original_intent)
             yield held, intent, row
         finally: held.close()
 
@@ -368,16 +372,21 @@ class IntegrationPublisher:
             if row['phase'] not in ('staged', 'applying'): _refuse('Publication requires staged actions or explicit recovery reconciliation.')
             actions = self._actions(journal.operation_id)
             self._validate_actions(intent, actions)
-            if any(action['phase'] != 'planned' for action in actions): _refuse('Interrupted actions require explicit recovery reconciliation.')
+            continuing = any(action['phase'] != 'planned' for action in actions)
+            if continuing:
+                from .integration_recovery import IntegrationRecovery
+                IntegrationRecovery(self.service, self.catalog).continuation(journal)
             root = Path(journal.target.path); directories = self._directory_state(intent, actions)
             self._check_directories(held, root, directories)
             # Refresh every replacement prefix before the first target mutation.
             # This includes protected/excluded and empty descendants, not just C.
-            self._check_replacement_inventories(held, root, intent['expected']['directory_inventories'])
+            if not continuing:
+                self._check_replacement_inventories(held, root, intent['expected']['directory_inventories'])
             with self.catalog.connect(write=True) as db:
                 db.execute("UPDATE integration_journals SET phase='applying' WHERE operation_id=?", (journal.operation_id,))
                 db.execute("UPDATE integration_plans SET state='applying' WHERE id=?", (journal.plan_id,))
             for action in actions:
+                if action['phase'] == 'done': continue
                 ordinal = action['ordinal']; kind = action['kind']
                 before = json.loads(action['old_json']); after = json.loads(action['new_json'])
                 self._check_directories(held, root, directories)
@@ -392,7 +401,10 @@ class IntegrationPublisher:
                     if os.listdir(held.open(root/action['path'])): _refuse('A replacement directory is no longer empty.')
                 record = dict(ordinal=ordinal, path=action['path'], kind=kind, old=before, new=after, slot=action['slot'])
                 held.check()
-                self._record(held.open(journal.path), f'{ordinal}.intent.json', record)
+                if _stat(held.open(journal.path), f'{ordinal}.intent.json') is None:
+                    self._record(held.open(journal.path), f'{ordinal}.intent.json', record)
+                else:
+                    self._read_record(held.open(journal.path), f'{ordinal}.intent.json', record)
                 with self.catalog.connect(write=True) as db:
                     db.execute("UPDATE integration_actions SET phase='intent',old_json=?,new_json=? WHERE operation_id=? AND ordinal=?",
                                (canonical(before), canonical(after), journal.operation_id, ordinal))

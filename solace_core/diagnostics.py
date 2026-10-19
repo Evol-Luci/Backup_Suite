@@ -34,6 +34,8 @@ def inspect(registration, policy=None):
                         available=all(actual[key]==identity[key] for key in ('path','mount_id','device','inode'))
                     except (OSError,CoreError):available=False
                     result['workspaces'].append(dict(id=identity['id'],task_id=identity['task_id'],available=available))
+            if version == 3:
+                result['integration_recovery'] = [dict(operation_id=r[0],plan_id=r[1],phase=r[2],validation='deferred') for r in db.execute("SELECT operation_id,plan_id,phase FROM integration_journals WHERE phase NOT IN ('committed','restored','abandoned')")]
             pending = [dict(id=row[0],kind=row[1],state=row[2]) for row in db.execute("SELECT id,kind,state FROM operations WHERE state IN ('queued','running','interrupted')")]
         result.update(ok=True, operations=pending)
         root=Path(registration['root'])

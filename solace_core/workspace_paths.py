@@ -182,6 +182,34 @@ class WorkspacePaths:
                             'SELECT c.path,c.operation_id,c.kind,j.phase FROM integration_claims c '
                             'LEFT JOIN integration_journals j ON c.operation_id=j.operation_id'):
                             claims.append(dict(path=path,operation_id=operation,kind=kind,phase=phase))
+                        # Logical ownership survives a project/store relocation even
+                        # before an explicit recovery identifies the moved journal.
+                        # Candidate-only placement validation precedes the atomic registry
+                        # receipt; all registered aliases are guarded after that commit.
+                        if not (candidate is not None and record['id']==project_id):
+                            for operation,target_key,target_path,intent_json,phase in db.execute(
+                                "SELECT j.operation_id,p.target_key,j.target_identity_json,j.intent_json,j.phase "
+                                "FROM integration_journals j JOIN integration_plans p ON p.id=j.plan_id "
+                                "WHERE j.phase NOT IN ('committed','restored','abandoned')"):
+                                intent=json.loads(intent_json)
+                                if target_key=='source': logical=record['root']
+                                else:
+                                    workspace=db.execute('SELECT path FROM workspaces WHERE id=?',(target_key.split(':',1)[1],)).fetchone()
+                                    if workspace is None: raise CoreError('STORE_UNAVAILABLE','An unresolved target owner is missing.','Preserve the catalog for inspection.')
+                                    logical=workspace[0]
+                                    old_store=Path(intent['expected']['store_identity']['path'])
+                                    if Path(logical).is_relative_to(old_store): logical=str(Path(record['store'])/Path(logical).relative_to(old_store))
+                                claims.append(dict(path=logical,operation_id=operation,kind='target',phase=phase))
+                        for operation,location_json in db.execute(
+                            "SELECT r.original_operation_id,r.location_json FROM integration_recoveries r "
+                            "JOIN integration_journals j ON j.operation_id=r.original_operation_id "
+                            "WHERE j.phase NOT IN ('committed','restored','abandoned')"):
+                            mapping=json.loads(location_json).get('mapping')
+                            if isinstance(mapping,dict) and isinstance(mapping.get('new'),dict):
+                                for kind in ('target','journal'):
+                                    identity=mapping['new'].get(kind)
+                                    if isinstance(identity,dict) and isinstance(identity.get('path'),str):
+                                        claims.append(dict(path=identity['path'],operation_id=operation,kind=kind,phase='recovery_required'))
             except (CoreError,OSError,sqlite3.DatabaseError) as error:
                 raise CoreError('STORE_UNAVAILABLE','Retained ownership cannot be checked.',
                                 'Reconnect the retained store before accessing live trees.') from error
