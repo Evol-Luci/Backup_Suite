@@ -64,6 +64,12 @@ def operation_view(value):
     if isinstance(result,dict):
         if 'added' in result: value['result']=summary(result)
         elif isinstance(result.get('comparison'),dict):value['result']=dict(result,comparison=summary(result['comparison']))
+    if value.get('kind','').startswith('integration.'):
+        # Public operations expose references, never private context/approval bindings.
+        value['params']={k:v for k,v in (value.get('params') or {}).items() if k in
+                         ('project','task','result','plan','revision','operation','receipt_id','destination')}
+        if encoded_size(value)>SUMMARY_BYTES:
+            raise CoreError('RESPONSE_TOO_LARGE','The operation summary exceeds its byte limit.','Inspect the integration receipt or paginated review.')
     params=value.get('params')
     if isinstance(params,dict):
         for key in ('workspace','parent_workspace'):

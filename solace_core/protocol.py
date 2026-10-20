@@ -45,6 +45,9 @@ TASK_PARAMS = {
 PARAMS.update(TASK_PARAMS)
 PARAMS['checkpoint.list']=({'project'},{'all_workspaces'})
 METHODS.update(TASK_PARAMS)
+from .integration_protocol import INTEGRATION_PARAMS, validate_integration
+PARAMS.update(INTEGRATION_PARAMS)
+METHODS.update(INTEGRATION_PARAMS)
 
 
 def encode_frame(value):
@@ -98,6 +101,9 @@ def validate_request(value):
     method, params = value['method'], value['params']
     if not isinstance(method, str) or method not in METHODS or not isinstance(params, dict):
         raise invalid('Unknown method or invalid parameters.')
+    if method in INTEGRATION_PARAMS:
+        validate_integration(method, params)
+        return value
     required, optional = PARAMS[method]
     if not required <= params.keys() or params.keys() - required - optional:
         raise invalid('Missing or extra method parameters.')

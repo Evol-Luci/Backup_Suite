@@ -87,7 +87,22 @@ class CoreService:
             if ids:
                 self.recovery.append(dict(project=project, operations=ids, state='interrupted'))
 
-    def _receipt_catalog(self, project):
+    def _receipt_catalog(self, project, *, metadata=False):
+        if metadata:
+            # Retained integration receipts/metadata must not finish a pending
+            # content/location handoff before their durable replay lookup.
+            try:
+                record, registered = self.registry.get(project), True
+            except CoreError as error:
+                if error.code != 'PROJECT_NOT_FOUND': raise
+                record, registered = self.registry.retired_registration(project), False
+            with self._guard:
+                catalog = self._catalogs.get(project)
+                if catalog is None or catalog.registration != record:
+                    catalog = ProjectCatalog(record,self.registry.policy)
+                    if registered: self._catalogs[project] = catalog
+            catalog.validate(require_root=False,require_objects=False)
+            return catalog, registered
         try:
             return self.catalog(project), True
         except CoreError as error:
@@ -109,7 +124,7 @@ class CoreService:
         for request_id,value in receipts:
             if (value.get('id')!=catalog.registration['id'] or 'previous_location' not in value): continue
             if any(value[key]!=catalog.registration[key] for key in ('root','store')): return
-            with catalog.connect() as db:
+            with catalog.connect(metadata=True) as db:
                 done=any(json.loads(row[0]).get('request_id')==request_id for row in db.execute(
                     "SELECT details_json FROM events WHERE kind='project.location.reconciled'"))
             if not done: self._rebase_recovery(catalog,value['previous_location'],request_id)
@@ -174,7 +189,7 @@ class CoreService:
         method, p, actor, reqid = request['method'], request['params'], request['actor'], request['id']
         if method == 'core.status':
             return dict(pid=os.getpid(), protocol_version=1, projects=self.registry.list(), recovery=self.recovery,
-                        capabilities=['tasks.v1','workspaces.v1','project-upgrade.v1','prompt-retention.v1'],
+                        capabilities=['tasks.v1','workspaces.v1','project-upgrade.v1','prompt-retention.v1','integrations.v1'],
                         core_schema_supported=[1,2,3],core_schema_created=3,
                         prompt_maintenance=dict(self.maintenance.failures) if self.maintenance else {})
         if method == 'doctor':
@@ -185,6 +200,10 @@ class CoreService:
         if method == 'project.list':
             return {'projects': self.registry.list()}
         project = p['project']
+        if method.startswith('integration.'):
+            from .integration_operations import IntegrationOperations
+            catalog, registered = self._receipt_catalog(project,metadata=True)
+            return IntegrationOperations(self,catalog).dispatch(request,registered=registered)
         coordinator = self.coordinator(project)
         if method in ('project.relink', 'project.unregister'):
             with self.registry.lock, coordinator.lock:

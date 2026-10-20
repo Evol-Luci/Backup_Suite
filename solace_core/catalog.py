@@ -81,7 +81,7 @@ class ProjectCatalog:
         ObjectStore._sync_directories((catalog.store / 'objects', catalog.store, catalog.store.parent))
         return catalog
 
-    def validate(self, *, require_root=True):
+    def validate(self, *, require_root=True, require_objects=True):
         r = self.registration
         root = Path(r['root'])
         if require_root and (root.is_symlink() or not root.is_dir()):
@@ -103,7 +103,7 @@ class ProjectCatalog:
                 if row[1:] != (r['id'], r['store_uuid']):
                     raise CoreError('STORE_IDENTITY_MISMATCH', 'This store belongs to a different project.', 'Select the original store; no data has been replaced.')
             objects = self.store / 'objects'
-            if objects.is_symlink() or not objects.is_dir():
+            if require_objects and (objects.is_symlink() or not objects.is_dir()):
                 raise CoreError('STORE_UNAVAILABLE', 'The objects directory is unavailable.', 'Preserve the store and inspect it with doctor.')
         except sqlite3.DatabaseError as error:
             raise classify(error) from error
@@ -117,8 +117,8 @@ class ProjectCatalog:
             raise classify(error) from error
 
     @contextmanager
-    def connect(self, *, write=False):
-        self.validate(require_root=False)
+    def connect(self, *, write=False, metadata=False):
+        self.validate(require_root=False, require_objects=not metadata)
         db = sqlite3.connect(self.database.as_uri() + ('?mode=rw' if write else '?mode=ro'), uri=True, timeout=30)
         db.row_factory = sqlite3.Row
         try:
@@ -153,7 +153,7 @@ class ProjectCatalog:
 
     def find_operation(self, request):
         signature = fingerprint(request['method'], request['params'], request['actor'])
-        with self.connect() as db:
+        with self.connect(metadata=True) as db:
             if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3):
                 from .tasks import TaskCatalog
                 return TaskCatalog(self).lookup_request(request,db)
@@ -198,7 +198,7 @@ class ProjectCatalog:
         return operation_view(value)
 
     def get_operation(self, operation_id):
-        with self.connect() as db:
+        with self.connect(metadata=True) as db:
             row = db.execute('SELECT * FROM operations WHERE id=?', (operation_id,)).fetchone()
         if row is None:
             raise CoreError('INVALID_REQUEST', 'The operation does not exist.', 'Use an operation ID returned by this project.')
@@ -253,11 +253,11 @@ class ProjectCatalog:
         return events
 
     def has_pending(self):
-        with self.connect() as db:
+        with self.connect(metadata=True) as db:
             return db.execute("SELECT 1 FROM operations WHERE state IN ('queued','running') LIMIT 1").fetchone() is not None
 
     def recover_interrupted(self):
-        with self.connect(write=True) as db:
+        with self.connect(write=True, metadata=True) as db:
             ids = [r[0] for r in db.execute("SELECT id FROM operations WHERE state IN ('queued','running')")]
             for operation in ids:
                 error = CoreError('OPERATION_INTERRUPTED', 'The core stopped before a committed result.', 'Inspect the operation and any restore destination before starting new work.').as_dict()

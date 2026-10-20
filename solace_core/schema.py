@@ -110,7 +110,7 @@ def create_schema_v2(db):
 
 
 def schema_version(catalog):
-    catalog.validate(require_root=False)
+    catalog.validate(require_root=False, require_objects=False)
     with readonly_database(catalog.database) as db:
         return db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0]
 

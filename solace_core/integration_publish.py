@@ -91,7 +91,13 @@ class IntegrationPublisher:
         self.service, self.catalog, self.failpoint = service, catalog, failpoint
         self.claims = IntegrationClaims(service, catalog)
         self.plans = self.claims.plans
-        self.snapshots = SnapshotStore(catalog)
+        self._snapshots = None
+
+    @property
+    def snapshots(self):
+        if self._snapshots is None:
+            self._snapshots = SnapshotStore(self.catalog)
+        return self._snapshots
 
     def _hit(self, name):
         if self.failpoint is not None: self.failpoint(name)

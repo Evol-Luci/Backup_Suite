@@ -53,7 +53,13 @@ class IntegrationPlans:
         self.tasks = TaskCatalog(catalog)
         self.paths = service.workspace_paths
         self.coordinator = service.coordinator(catalog.registration['id'])
-        self.snapshots = SnapshotStore(catalog)
+        self._snapshots = None
+
+    @property
+    def snapshots(self):
+        if self._snapshots is None:
+            self._snapshots = SnapshotStore(self.catalog)
+        return self._snapshots
 
     @staticmethod
     def _latest(db, task):
@@ -229,7 +235,12 @@ class IntegrationPlans:
                         revisions = {task['id']: task['revision']}
                         if target.task_id:
                             revisions[target.task_id] = target.revision
-                        self.tasks.claim(db, operation_id, revisions)
+                        owned = {r[0] for r in db.execute('SELECT task_id FROM task_claims WHERE operation_id=?',(operation_id,))}
+                        if owned:
+                            if owned != set(revisions): _refuse('TASK_BUSY','Preparation lost its exact accepted task claims.')
+                            for task_id, revision in revisions.items(): self.tasks.assert_revision(db,task_id,revision)
+                        else:
+                            self.tasks.claim(db, operation_id, revisions)
                         from .integration_claims import IntegrationClaims
                         IntegrationClaims(self.service,self.catalog).claim_access(db,operation_id,[target.identity.path])
                         operation_params = {key:params[key] for key in ('project', 'task', 'result', 'expected_revision', 'expected_target_revision') if key in params}

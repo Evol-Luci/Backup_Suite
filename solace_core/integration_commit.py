@@ -187,7 +187,7 @@ class IntegrationCommit:
         return result
 
     def receipt(self, receipt_id: str, *, after: int = 0, limit: int = 128) -> dict:
-        with self.catalog.connect() as db:
+        with self.catalog.connect(metadata=True) as db:
             row = rowdict(db,'SELECT * FROM integration_receipts WHERE id=?',(receipt_id,))
             if row is None:
                 raise CoreError('INTEGRATION_RECEIPT_NOT_FOUND','The retained receipt does not exist.','Use a receipt ID returned by this project.')

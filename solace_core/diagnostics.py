@@ -35,6 +35,11 @@ def inspect(registration, policy=None):
                     except (OSError,CoreError):available=False
                     result['workspaces'].append(dict(id=identity['id'],task_id=identity['task_id'],available=available))
             if version == 3:
+                # Aggregate metadata only; never load plans/CAS, approvals or prompt bodies.
+                result['integrations'] = dict(
+                    plans={r[0]:r[1] for r in db.execute('SELECT state,COUNT(*) FROM integration_plans GROUP BY state')},
+                    receipts=db.execute('SELECT COUNT(*) FROM integration_receipts').fetchone()[0],
+                    interrupted_exports=db.execute("SELECT COUNT(*) FROM integration_exports WHERE phase='interrupted'").fetchone()[0])
                 result['integration_recovery'] = [dict(operation_id=r[0],plan_id=r[1],phase=r[2],validation='deferred') for r in db.execute("SELECT operation_id,plan_id,phase FROM integration_journals WHERE phase NOT IN ('committed','restored','abandoned')")]
             pending = [dict(id=row[0],kind=row[1],state=row[2]) for row in db.execute("SELECT id,kind,state FROM operations WHERE state IN ('queued','running','interrupted')")]
         result.update(ok=True, operations=pending)

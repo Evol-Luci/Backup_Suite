@@ -49,8 +49,11 @@ class IntegrationRecovery:
         require_integrations(self.catalog)
         if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 256:
             raise CoreError('INVALID_REQUEST', 'Invalid recovery page.', 'Use a nonnegative cursor and limit 1–256.')
-        row = self.publisher._row(operation_id)
-        actions = self.publisher._actions(operation_id)
+        with self.catalog.connect(metadata=True) as db:
+            retained = db.execute('SELECT * FROM integration_journals WHERE operation_id=?',(operation_id,)).fetchone()
+            if retained is None: _refuse('No retained journal exists for this operation.')
+            row = dict(retained)
+            actions = [dict(r) for r in db.execute('SELECT * FROM integration_actions WHERE operation_id=? ORDER BY ordinal',(operation_id,))]
         if after > len(actions): raise CoreError('INVALID_REQUEST', 'Recovery cursor is out of range.', 'Start at cursor zero.')
         available = all(Path(p).is_dir() for p in (row['journal_path'], json.loads(row['target_identity_json'])['path']))
         result = dict(operation_id=operation_id, plan_id=row['plan_id'], revision=row['revision'],

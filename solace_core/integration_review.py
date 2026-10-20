@@ -79,8 +79,11 @@ class IntegrationReview:
     def __init__(self, service, catalog):
         self.service, self.catalog = service, catalog
         self.plans = IntegrationPlans(service, catalog)
-        self.snapshots = self.plans.snapshots
         self.paths, self.tasks = self.plans.paths, self.plans.tasks
+
+    @property
+    def snapshots(self):
+        return self.plans.snapshots
 
     def _header(self, db, plan_id, revision=None):
         require_integrations(self.catalog)
@@ -112,12 +115,12 @@ class IntegrationReview:
         return _bounded(result, SUMMARY_BYTES)
 
     def show(self, plan_id):
-        with self.catalog.connect() as db:
+        with self.catalog.connect(metadata=True) as db:
             plan, row = self._header(db, plan_id)
             return self._summary(db, plan, row)
 
     def diff(self, params):
-        with self.catalog.connect() as db:
+        with self.catalog.connect(metadata=True) as db:
             plan, revision = self._header(db, params['plan'], params.get('revision'))
             if 'path' in params:
                 if 'revision' not in params or params.get('version') not in _VERSIONS or {'after', 'limit'} & params.keys():
@@ -326,13 +329,34 @@ class IntegrationReview:
                 os.fsync(parent)
         os.fsync(tree_fd)
 
+    def reserve_export(self, db, operation_id, params):
+        """Caller holds short placement/coordinator locks and acceptance transaction."""
+        header, row = self._header(db, params['plan'], params['revision'])
+        destination = _absolute(params['destination'])
+        staging = destination.parent/('.solace-export-'+operation_id)
+        self._export_location(destination, staging)
+        with _held_directory(destination.parent) as parent:
+            if not os.access(destination.parent,os.W_OK|os.X_OK) or not os.fstat(parent).st_mode & 0o222:
+                raise CoreError('PERMISSION_DENIED','The export parent is not writable.','Choose a writable local parent directory.')
+            parent_identity = directory_identity(destination.parent,self.catalog.policy)
+        now = self.catalog._now()
+        db.execute('INSERT INTO integration_exports VALUES (?,?,?,?,?,?)',
+                   (operation_id,header['id'],params['revision'],str(destination),None,'reserved'))
+        for path in (destination,staging):
+            db.execute('INSERT INTO integration_claims VALUES (?,?,?,?,?)',(str(path),operation_id,'export',None,now))
+        for name in _VERSIONS:
+            db.execute('INSERT OR IGNORE INTO integration_refs VALUES (?,?,?,?)',(row[name+'_id'],operation_id,'export',now))
+        return parent_identity
+
     def export(self, operation_id, request):
         params = request['params']; require_integrations(self.catalog)
         reserved = False
         try:
             with self.catalog.connect() as db:
                 retained = rowdict(db,'SELECT * FROM integration_exports WHERE operation_id=?',(operation_id,))
-                if retained:
+                operation = rowdict(db,'SELECT state,params_json FROM operations WHERE id=?',(operation_id,))
+                reserved = retained is not None
+                if retained and retained['phase'] != 'reserved':
                     return _bounded(dict(operation_id=operation_id,plan_id=retained['plan_id'],revision=retained['revision'],
                         path=retained['path'],phase=retained['phase']),SUMMARY_BYTES)
                 self._header(db,params['plan'],params['revision'])
@@ -341,20 +365,23 @@ class IntegrationReview:
             versions = {name:self.snapshots.entries(getattr(plan,name)) for name in _VERSIONS}
             destination = _absolute(params['destination'])
             staging = destination.parent/('.solace-export-'+operation_id)
-            with self.paths.registry.lock, self.plans.coordinator.lock:
-                self._export_location(destination, staging)
-                with _held_directory(destination.parent) as parent:
-                    if not os.access(destination.parent,os.W_OK|os.X_OK) or not os.fstat(parent).st_mode & 0o222:
-                        raise CoreError('PERMISSION_DENIED','The export parent is not writable.','Choose a writable local parent directory.')
-                    parent_identity = directory_identity(destination.parent,self.catalog.policy)
-                with self.catalog.connect(write=True) as db:
-                    self._header(db,plan.id,params['revision'])
-                    now = self.catalog._now()
-                    db.execute('INSERT INTO integration_exports VALUES (?,?,?,?,?,?)',(operation_id,plan.id,plan.revision,str(destination),None,'reserved'))
+            if retained:
+                reserved = True
+                context = json.loads(operation['params_json'])
+                parent_identity = context['destination_parent']
+                if retained['path'] != str(destination) or retained['plan_id'] != plan.id or retained['revision'] != plan.revision:
+                    raise invalid('The export differs from its accepted reservation.')
+                with self.paths.registry.lock, self.plans.coordinator.lock, self.catalog.connect() as db:
+                    expected = {str(destination),str(staging)}
+                    actual = {r[0] for r in db.execute("SELECT path FROM integration_claims WHERE operation_id=? AND kind='export'",(operation_id,))}
+                    if actual != expected: raise invalid('The export no longer owns its reserved paths.')
                     for path in (destination,staging):
-                        db.execute('INSERT INTO integration_claims VALUES (?,?,?,?,?)',(str(path),operation_id,'export',None,now))
-                    for name in _VERSIONS:
-                        db.execute('INSERT OR IGNORE INTO integration_refs VALUES (?,?,?,?)',(getattr(plan,name).checkpoint_id,operation_id,'export',now))
+                        self.paths.validate(path,creating=True)
+                        self.paths.assert_access(path,operation_id=operation_id)
+                        if os.path.lexists(path): raise FileExistsError(str(path))
+            else:
+                with self.paths.registry.lock, self.plans.coordinator.lock, self.catalog.connect(write=True) as db:
+                    parent_identity = self.reserve_export(db,operation_id,params)
                 reserved = True
             # Durable final and staging claims now exclude conflicting placement.
             with _held_directory(destination.parent) as parent:
@@ -392,9 +419,11 @@ class IntegrationReview:
         except Exception as error:
             failure = classify(error)
             with self.catalog.connect(write=True) as db:
+                operation = db.execute('SELECT state FROM operations WHERE id=?',(operation_id,)).fetchone()
+                if operation and operation[0]=='succeeded':
+                    return json.loads(db.execute('SELECT result_json FROM operations WHERE id=?',(operation_id,)).fetchone()[0])
                 if reserved:
                     db.execute("UPDATE integration_exports SET phase='interrupted' WHERE operation_id=?",(operation_id,))
-                operation = db.execute('SELECT state FROM operations WHERE id=?',(operation_id,)).fetchone()
                 if operation and operation[0] in ('queued','running'):
                     self.catalog._transition(db,operation_id,'failed',error=failure.as_dict())
             self.catalog.notify()

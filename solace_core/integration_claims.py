@@ -56,7 +56,14 @@ class IntegrationClaims:
         request=dict(version=1,id=str(uuid.uuid4()),method='integration.read',actor='core',
                      params=dict(project=self.catalog.registration['id']))
         with self.paths.registry.lock, self.coordinator.lock:
-            operation=self.catalog.accept_operation(request)['operation_id']
+            if self.paths.registry.get(self.catalog.registration['id']) != self.catalog.registration:
+                stale('Project registration changed before this synchronous integration read.')
+            try:
+                operation=self.catalog.accept_operation(request)['operation_id']
+            except Exception:
+                accepted=self.catalog.find_operation(request)
+                if accepted is None: raise
+                operation=accepted['operation_id']
             try:
                 with self.catalog.connect(write=True) as db:
                     self.claim_access(db,operation,paths)
@@ -103,6 +110,8 @@ class IntegrationClaims:
         self.paths.managed_locations()
 
     def _check_metadata(self, plan):
+        if self.paths.registry.get(self.catalog.registration['id']) != self.catalog.registration:
+            stale('Project registration changed after this plan was selected.')
         require_integrations(self.catalog)
         with self.catalog.connect() as db:
             header, row = self._rows(db, plan)
