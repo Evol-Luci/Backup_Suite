@@ -10,6 +10,7 @@ import uuid
 
 from .errors import CoreError, classify
 from .integration_publish import IntegrationPublisher, _identity, _match, _stat, _refuse
+from .integration_plans import relevant_boundaries
 from .integration_snapshots import canonical, entry_from_json
 from .integration_types import Identity, Journal
 from .observations import encoded_size
@@ -340,7 +341,7 @@ class IntegrationRecovery:
             # exact workspace-root substitutions, never arbitrary string replacement.
             actual=sorted(set(self._map_owned_path(p,mapping) for p in actual) |
                 ({mapping['old']['target']['path']} if owner is not None and mapping['old']['target']['path'] in actual else set()))
-            if actual!=new_expected['protected_roots']: _refuse('Protected boundaries changed during relocation.')
+            if relevant_boundaries(actual,journal.target.path)!=new_expected['protected_roots']: _refuse('Protected boundaries changed during relocation.')
             mapping['state']='applied';location['phase']='location_applied'
             with self.catalog.connect(write=True) as db:
                 db.execute('UPDATE integration_journals SET journal_path=?,identity_json=?,target_identity_json=? WHERE operation_id=?',
@@ -390,8 +391,10 @@ class IntegrationRecovery:
         expected['store_identity']=mapping['new']['store']
         expected['ancestors']=mapping['new']['ancestors']
         retained=expected['protected_roots']
-        expected['protected_roots']=sorted(set(cls._map_owned_path(p,mapping) for p in retained) |
-            ({mapping['old']['target']['path']} if expected['target']['task_id'] is not None and mapping['old']['target']['path'] in retained else set()))
+        expected['protected_roots']=relevant_boundaries(
+            set(cls._map_owned_path(p,mapping) for p in retained) |
+            ({mapping['old']['target']['path']} if expected['target']['task_id'] is not None and mapping['old']['target']['path'] in retained else set()),
+            mapping['new']['target']['path'])
         return expected
 
     def _validate_mapping(self, intent, journal, mapping, requested):

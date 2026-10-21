@@ -12,6 +12,23 @@ from solace_core.lineage import Lineage
 
 
 class PrepareTests(IntegrationCase):
+    def test_unrelated_registration_during_prepare_does_not_change_target_binding(self):
+        task,result,_=self.ready_task({'file':b'incoming'})
+        from solace_engine.repository import ProjectRepository
+        original=ProjectRepository._scan;registered=[]
+        def scan(repository,*args,**kwargs):
+            entries=original(repository,*args,**kwargs)
+            if not registered:
+                other=self.base/'unrelated';other.mkdir()
+                registered.append(self.call('project.add',root=str(other)))
+            return entries
+        with patch.object(ProjectRepository,'_scan',scan):plan=self.prepare_direct(task,result)
+        self.assertEqual(plan.state,'prepared')
+        with self.catalog.connect() as db:
+            expected=json.loads(db.execute('SELECT expected_json FROM integration_revisions WHERE plan_id=?',(plan.id,)).fetchone()[0])
+        self.assertNotIn(registered[0]['store'],expected['protected_roots'])
+        self.assertIn(registered[0]['store'],self.plans._boundaries())
+
     def seed(self):
         (self.root/'file').write_bytes(b'a\nb\nc\n')
         return self.ready_task({'file': b'A\nb\nc\n'})

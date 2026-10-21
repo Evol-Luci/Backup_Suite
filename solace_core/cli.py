@@ -50,6 +50,8 @@ def _parser():
     unregister=actions.add_parser('unregister');unregister.add_argument('project')
     from .task_cli import add_parsers
     add_parsers(commands,actions)
+    from .integration_cli import add_parsers as add_integration_parsers
+    add_integration_parsers(commands)
     checkpoints=commands.add_parser('checkpoint'); actions=checkpoints.add_subparsers(dest='action',required=True)
     for action in ('create','list','verify','restore','usage'):
         p=actions.add_parser(action);p.add_argument('project')
@@ -126,6 +128,9 @@ def main(argv=None):
         if args.command in ('task','workspace') or (args.command=='project' and args.action in ('upgrade','prompt-policy')):
             from .task_cli import prepare
             method,params=prepare(client,args,params['project'],globals_.request_id)
+        if args.command=='integration':
+            from .integration_cli import prepare
+            method,params=prepare(client,args,params['project'],globals_.request_id)
         if args.command=='checkpoint':
             if args.action=='list' and args.all_workspaces:
                 from .task_cli import unwrap
@@ -145,6 +150,9 @@ def main(argv=None):
             if text is None:
                 raise CoreError('PROMPT_UNAVAILABLE','Prompt text is '+result['result']['status']+'.','Inspect prompt metadata with --json.')
             sys.stdout.buffer.write(text.encode('utf-8'));sys.stdout.buffer.flush()
+        elif args.command=='integration' and not as_json:
+            from .integration_cli import emit as emit_integration
+            emit_integration(result,method,params)
         else: emit(result,as_json)
         if not result['ok']:return exit_code(result['error']['code'])
         if getattr(args,'wait',False) and result['result'].get('state') in ('failed','interrupted'):return 1

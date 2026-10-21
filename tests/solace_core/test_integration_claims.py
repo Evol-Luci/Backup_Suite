@@ -15,6 +15,27 @@ from solace_core.workspace_paths import directory_identity
 
 
 class ClaimsTests(IntegrationCase):
+    def test_export_and_unrelated_workspace_preserve_exact_review_token_and_revision(self):
+        plan=self.simple_plan()
+        request=self.approval_request(plan,accept_unchecked=True)
+        with self.catalog.connect() as db:
+            original=dict(db.execute('SELECT * FROM integration_revisions WHERE plan_id=?',(plan.id,)).fetchone())
+            original.pop('validated_at')
+        self.export_direct(plan,self.base/'review-copy')
+        self.start(self.create_task('independent workspace'))
+        other=self.base/'unrelated';other.mkdir();self.call('project.add',root=str(other))
+        approved=self.claims().approve(request)
+        self.assertEqual(approved['revision'],plan.revision)
+        with self.catalog.connect() as db:
+            revised=dict(db.execute('SELECT * FROM integration_revisions WHERE plan_id=?',(plan.id,)).fetchone())
+            revised.pop('validated_at')  # Approval refreshes this documented observation time.
+            self.assertEqual(revised,original)
+            self.assertEqual(revised['review_token'],request['params']['token'])
+            binding=json.loads(db.execute('SELECT binding_json FROM integration_approvals').fetchone()[0])
+        self.assertEqual(binding['review_token'],request['params']['token'])
+        self.assertIn(str(self.base/'review-copy'),self.plans._boundaries())
+        with self.assertRaises(CoreError):self.service.workspace_paths.assert_unowned(self.base/'review-copy')
+
     def claims(self):
         from solace_core.integration_claims import IntegrationClaims
         return IntegrationClaims(self.service, self.catalog)
@@ -258,7 +279,12 @@ class ClaimsTests(IntegrationCase):
             with self.assertRaises(CoreError) as raised:self.claims().validate(plan,scan=False)
         self.assertEqual(raised.exception.code,'INTEGRATION_PLAN_STALE')
         other=self.base/'other';other.mkdir();self.call('project.add',root=str(other))
-        with self.assertRaises(CoreError) as raised:self.claims().validate(plan,scan=False)
+        self.claims().validate(plan,scan=False)
+        from solace_core.workspace_paths import CoreConfig
+        config=self.service.workspace_paths.config
+        changed=CoreConfig(sync_roots=(*config.sync_roots,self.root/'new-protected'),workspace_root=config.workspace_root)
+        with patch.object(self.service.workspace_paths,'config',changed), self.assertRaises(CoreError) as raised:
+            self.claims().validate(plan,scan=False)
         self.assertEqual(raised.exception.code,'INTEGRATION_PLAN_STALE')
 
     def test_empty_home_git_allows_journal_but_real_marker_refuses(self):

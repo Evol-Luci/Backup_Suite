@@ -13,6 +13,18 @@ from solace_core.observations import encoded_size
 
 
 class ReviewTests(IntegrationCase):
+    def test_resolution_keeps_global_physical_identity_exclusions(self):
+        from solace_core.workspace_paths import CoreConfig
+        plan=self.make_binary_conflict()
+        protected=self.base/'outside-protected-file'
+        os.link(self.root/'data.bin',protected)
+        original=self.service.workspace_paths.config
+        self.service.workspace_paths.config=CoreConfig(sync_roots=(protected,),workspace_root=original.workspace_root)
+        with self.assertRaises(CoreError) as raised:
+            self.review.resolve(self.request('integration.resolve',plan=plan.id,revision=1,path='data.bin',take='incoming'))
+        self.assertEqual(raised.exception.code,'INTEGRATION_PROTECTED_PATH')
+        self.assertEqual((self.root/'data.bin').read_bytes(),b'\0current')
+
     def resolve(self, plan, **params):
         return self.review.resolve(self.request('integration.resolve', plan=plan.id,
             revision=plan.revision, path=params.pop('path', 'data.bin'), **params))

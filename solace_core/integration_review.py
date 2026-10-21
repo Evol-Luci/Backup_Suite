@@ -259,7 +259,7 @@ class IntegrationReview:
                 purpose='workspace' if plan.target.task_id else 'source')
             expected = json.loads(row['expected_json'])
             profile = json.loads(row['profile_json'])
-            self.plans._protected_delta(Path(plan.target.identity.path), profile, expected['protected_roots'], versions['current'], entries)
+            self.plans._protected_delta(Path(plan.target.identity.path), profile, self.plans._boundaries(), versions['current'], entries)
             expected['directory_inventories'] = self.plans._inventories(Path(plan.target.identity.path), versions['current'], entries)
             conflicts = tuple(conflict for conflict in plan.conflicts if not (conflict.path == path or conflict.path.startswith(path+'/') or path.startswith(conflict.path+'/')))
             revision = plan.revision+1; now = self.catalog._now()

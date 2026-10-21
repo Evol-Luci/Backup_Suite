@@ -22,6 +22,13 @@ from .tasks import TaskCatalog
 from .workspace_paths import directory_identity, protected_excluder
 
 
+def relevant_boundaries(roots, target):
+    """Bind only ownership intersecting the fixed target; keep global guards."""
+    target = Path(target)
+    return sorted({str(path) for path in map(Path, roots)
+                   if path.is_relative_to(target) or target.is_relative_to(path)})
+
+
 def _refuse(code, message):
     raise CoreError(code, message, 'Inspect the task, retained plan and destination before preparing a new plan.')
 
@@ -156,7 +163,7 @@ class IntegrationPlans:
         ancestors = [directory_identity(path, self.catalog.policy) for path in root.parents]
         return dict(task_id=params['task'], result_id=params['result'], source_revision=params['expected_revision'],
                     target=asdict(target), store_identity=directory_identity(self.catalog.store, self.catalog.policy),
-                    ancestors=ancestors, protected_roots=roots,
+                    ancestors=ancestors, protected_roots=relevant_boundaries(roots, root),
                     source_head=Lineage(self.catalog).source_head(db), checks='not_run_by_solace', directory_inventories={})
 
     @staticmethod
@@ -284,7 +291,7 @@ class IntegrationPlans:
                     owner = db.execute('SELECT operation_id FROM task_claims WHERE task_id=?', (task_id,)).fetchone()
                     if owner is None or owner[0] != operation_id:
                         _refuse('TASK_BUSY', 'The preparation no longer owns its source and target tasks.')
-                if roots != self._boundaries():
+                if relevant_boundaries(roots, root) != relevant_boundaries(self._boundaries(), root):
                     _refuse('INTEGRATION_STALE', 'Protected ownership boundaries changed during preparation.')
                 fresh = self._expected(db, params, target, roots)
                 fresh['directory_inventories'] = inventories

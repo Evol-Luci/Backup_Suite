@@ -374,11 +374,10 @@ class RecoveryTests(IntegrationCase):
             release.set();worker.join(10);reader.join(10)
         self.assertTrue(all(response['ok'] for response in responses),responses)
         self.assertEqual(blocked[0]['error']['code'],'INTEGRATION_TARGET_BUSY')
-        # New registration changes the exact reviewed boundary set. Completion
-        # conservatively refuses it while retaining files and ownership.
-        self.assertTrue(all(isinstance(error,CoreError) for error in errors),errors)
-        if errors:
-            with self.assertRaises(CoreError):self.service.workspace_paths.assert_access(self.root)
+        # Unrelated retained ownership does not alter this target's binding.
+        self.assertEqual(errors,[])
+        self.service.workspace_paths.assert_access(self.root)
+        self.assertEqual((self.root/'file').read_bytes(),b'incoming')
 
     def test_rejected_location_does_not_claim_foreign_tree_or_poison_next_request(self):
         _,journal=self.staged_replacement();self.interrupt(journal,'old_moved:0')

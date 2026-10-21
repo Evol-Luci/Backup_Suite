@@ -4,6 +4,18 @@ from task_fixture import TaskCase
 
 
 class IntegrationCase(TaskCase):
+    def ready_cli_task(self, changes, *, parent=None):
+        """Build an immutable result using the real CLI of an acceptance fixture."""
+        extra = ('--parent', parent) if parent else ()
+        task = self.result('task', 'create', self.project, 'work', *extra)['task_id']
+        root = Path(self.completed('task', 'start', self.project, task)['path'])
+        for name, data in changes.items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        saved = self.completed('task', 'ready', self.project, task)['checkpoint_id']
+        return task, saved, root
+
     def ready_task(self, changes, *, parent=None):
         task = self.create_task(**({'parent': parent} if parent else {}))
         started = self.start(task)
