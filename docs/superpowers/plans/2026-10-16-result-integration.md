@@ -768,6 +768,3 @@ No new execution method was supplied with the design approval. Present this comm
 - **Inline execution:** implement sequentially in this session with checkpoints and independent whole-branch review.
 
 Recommend subagent-driven for this plan because the per-file recovery and cross-method claims affect user files and warrant independent review between tasks. Do not spawn agents while merely writing/reviewing this plan. After the user chooses and approves the plan, use the corresponding execution skill and preserve that choice.
-
-
-

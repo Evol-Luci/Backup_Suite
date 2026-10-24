@@ -6,7 +6,9 @@ The local core coordinates registrations and checkpoint operations for one Linux
 
 The local core, revisioned parent/child tasks, isolated workspaces, ready results and logical prompt retention are installed and passed live acceptance on 2026-10-16. See [task and workspace guidance](task-workspaces.md) and the [installed acceptance report](engineering/2026-10-15-task-workspaces-review-and-acceptance.md). New stores use core schema 2; existing schema-1 stores need an explicit preview/apply upgrade before using tasks. Runtime rollback preserves databases and cannot downgrade schema 2.
 
-The next subsystem is result integration: compare saved child results with the current parent, resolve conflicts, run configured checks and obtain approval before applying changes. Applying results, integration receipts, automatic integration policy and a GUI for this workflow are not implemented yet.
+[Manual result integration](result-integration.md) is implemented and source-tested in this checkout. Its required source runtime gates and independent whole-branch review passed on 2026-10-23; it is not installed. The candidate compares saved child results with the current parent or root results with the source, supports explicit conflict resolution/export, binds manual approval to one revision, and records `checks: not_run_by_solace`. Configured checks, automatic policy, forward undo and GUI remain deferred.
+
+The integration candidate creates schema-3 stores and supports schemas 1–3. Existing stores remain unchanged until an explicit per-project upgrade preview/apply; schema 2 retains tasks and integration requires 3. Old runtimes refuse schema 3. Installation preview never migrates stores. See the [candidate evidence and install boundary](engineering/2026-10-16-result-integration-review-and-acceptance.md).
 
 ## Install preview
 
@@ -17,9 +19,9 @@ Run from this checkout:
 systemd-analyze --user verify /tmp/solace-core-install-preview/solace-core.socket /tmp/solace-core-install-preview/solace-core.service
 ```
 
-Preview prints exact destinations, runtime contents, and activation commands; it does not modify your home directory. The initial core passed subprocess activation tests, isolated installer tests and 28 live user-manager checks on 2026-10-15. Task/workspace acceptance and the 192-test suite passed on 2026-10-16. See the [current installed acceptance and rollback report](engineering/2026-10-15-task-workspaces-review-and-acceptance.md); the [initial core report](engineering/2026-10-14-local-core-independent-review-and-acceptance.md) records the earlier installation.
+Preview prints exact destinations, runtime contents, and activation commands; it does not modify your home directory. The integration preview was generated under a private `/tmp` directory on 2026-10-23; its exact payload/digest and unchanged installed launcher/units are recorded in the candidate evidence. The source runtime gates later passed with permitted socket/systemd/display access; preview success itself does not establish installed service health. The initial core passed subprocess activation tests, isolated installer tests and 28 live user-manager checks on 2026-10-15. Task/workspace acceptance and the 192-test suite passed on 2026-10-16. See the [current installed acceptance and rollback report](engineering/2026-10-15-task-workspaces-review-and-acceptance.md); the [initial core report](engineering/2026-10-14-local-core-independent-review-and-acceptance.md) records the earlier installation.
 
-After reviewing the preview and authorizing installation:
+After reviewing a fresh preview and separately authorizing installation (these steps remain pending for the integration candidate):
 
 ```bash
 ./packaging/install-core.sh --apply

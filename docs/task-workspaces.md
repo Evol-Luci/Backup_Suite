@@ -2,9 +2,11 @@
 
 The installed local core supports parent tasks and direct children. External tools do the work in separate directories. Solace records requests, exact baselines and immutable ready results. A ready result awaits review/integration; it does not change the original project or combine child files. See the [review and installed acceptance report](engineering/2026-10-15-task-workspaces-review-and-acceptance.md) for verification and review limitations.
 
+The [manual integration candidate](result-integration.md) adds reviewed application and receipts in source; it is not installed. Its required source runtime gates and independent whole-branch review passed on 2026-10-23. Applying a child advances its parent's workspace and invalidates its ready eligibility without deleting old results. Root application requires ready children to have been applied or explicitly cancelled. Save the parent ready again after child integration. Applied-result counts remain separate from task lifecycle states.
+
 ## Upgrade an existing store
 
-New projects use core schema 2. Existing schema-1 projects retain checkpoint and doctor access; task commands require an explicit upgrade. Engine and registry schema versions remain 1.
+The installed runtime creates schema-2 projects. The integration candidate creates schema 3 and supports schemas 1–3; existing projects remain unchanged until explicit upgrade. Schema-1 projects retain checkpoint and doctor access, schema 2 supports tasks, and integration requires 3. Upgrade preview names the actual supported target; inspect its exact token before any separately authorized apply. Engine and registry schema versions remain 1.
 
 ```bash
 solace project upgrade PROJECT --preview --json
@@ -13,7 +15,7 @@ solace project upgrade PROJECT --apply --plan-token TOKEN --request-id REQUEST_U
 
 Read the preview and use its exact token. Apply refuses a stale preview or pending operations. It saves a consistent SQLite backup at `STORE/schema-backups/REQUEST_UUID/checkpoints.sqlite3`, verifies it, and commits schema changes and their receipt together. Original files and immutable objects are preserved. A failed migration preserves its backup evidence and rolls back SQL changes. Repeat the same apply request/token/UUID to retrieve its original receipt.
 
-Runtime rollback does not downgrade project databases or erase task/workspace references. An older core refuses schema 2. Preserve the store and return to a compatible runtime; do not replace its database with an old backup over new task history. Doctor reports versions and this boundary. Installation preview never migrates a project.
+Runtime rollback does not downgrade project databases or erase task/workspace references. A schema-1 core refuses schema 2; the installed schema-2 core refuses schema 3. Preserve the store and return to a compatible runtime; do not replace its database with an old backup over new task history. Doctor reports versions and this boundary. Installation preview never migrates a project.
 
 ## Give tools separate copies
 

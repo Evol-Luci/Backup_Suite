@@ -26,15 +26,15 @@ This register consolidates the final whole-branch review, the scoped fix review,
 - Object and shard directory entries are synced through their parent directories before checkpoint metadata can be committed.
 - Other reviewed fixes cover no-follow descriptor-relative traversal, symlink/FIFO replacement races, multi-chunk verification, rollback after partial database inserts, staged restore, concurrent destination creation, and interrupted object writes.
 
-## System work and follow-ups (updated 2026-10-16)
+## System work and follow-ups (updated 2026-10-22)
 
 These items are part of the intended Solace product direction, but are outside the first checkpoint-engine slice:
 
 | Area | Work still needed |
 |---|---|
 | Local core | **Installed and live-verified:** private socket, registry, lifecycle/recovery, events, CLI and local-store checks. [Current acceptance](2026-10-15-task-workspaces-review-and-acceptance.md). |
-| Agent task flow | **Installed:** parent/direct-child records, isolated workspaces, ready results, task events and logical prompt retention. **Next:** result integration, checks, review gates and receipts. Automatic integration policy follows a verified manual workflow. |
-| Human/agent interaction | Task CLI/API and terminal status are installed. Integration/review actions need the next subsystem; GUI status follows a stable shared integration API. |
+| Agent task flow | **Installed:** parent/direct-child records, isolated workspaces, ready results, task events and logical prompt retention. **Source candidate:** manual integration, review gates and receipts implemented/source-tested and task-source-reviewed through Task 11; final runtime GREEN, commits and whole-branch approval pending, not installed. Configured checks and automatic policy remain deferred. |
+| Human/agent interaction | Task CLI/API and terminal status are installed. Manual integration/review actions exist in the source candidate and await final acceptance/install gates; GUI status remains deferred. |
 | Version-control workflows | Understandable merge/conflict explanations, text merge flow, binary previews/locks, and Git import/export without live dual-write synchronization. |
 | Storage lifecycle | Workspace/checkpoint references, retention, conservative garbage collection, local-folder replication, and later encrypted Google Drive storage. |
 | Capture/restore limits | Cross-file application-consistent snapshots are not promised. Restore publication is atomic, but its completed tree is not yet promised durable across sudden power loss. Same-user hostile processes are outside the storage threat model. |
@@ -42,12 +42,12 @@ These items are part of the intended Solace product direction, but are outside t
 
 ## Suggested order
 
-1. Design result integration, configured checks and manual review through the CLI/API, using the installed exact task baselines and ready results. The [approved architecture](../specs/local-first-agent-version-engine.md) defines the delivery order.
+1. Finish the manual integration candidate runtime/commit/whole-branch gates and separately approve any installation. Configured check runner and automatic policy remain later work. The [approved architecture](../specs/local-first-agent-version-engine.md) defines the delivery order.
 2. Preserve interactive GUI rendering as a separate verification item; the existing Tk test execution gap is closed.
 
 ## Proposed integration follow-ups (2026-10-16)
 
-The [first integration proposal](../superpowers/specs/2026-10-16-result-integration-design.md) covers manual child-to-parent and parent-to-project planning, conflict resolution, recoverable application and immutable receipts. These separable follow-ups remain tracked here while that design is reviewed:
+The [first integration proposal](../superpowers/specs/2026-10-16-result-integration-design.md) covers manual child-to-parent and parent-to-project planning, conflict resolution, recoverable application and immutable receipts. The manual slice is implemented/source-tested and task-source-reviewed through Task 11, with runtime GREEN, commits and final whole-branch approval pending. It is not installed. See the [operator guide](../result-integration.md), [candidate evidence](2026-10-16-result-integration-review-and-acceptance.md) and [fresh-context handoff](result-integration-handoff.md). These separable follow-ups remain tracked:
 
 | Follow-up | Why separate / prerequisite |
 | --- | --- |
