@@ -1,8 +1,8 @@
 # Manual result integration
 
-Manual child-to-parent and root-task-to-source integration is implemented and source-tested in this checkout. The required source runtime gates and independent whole-branch review passed on 2026-10-23. This candidate is **not installed**. See the [review and acceptance record](engineering/2026-10-16-result-integration-review-and-acceptance.md) for exact evidence and the [continuation handoff](engineering/result-integration-handoff.md) for remaining work.
+Manual child-to-parent and root-task-to-source integration is installed and passed disposable live acceptance on 2026-10-23. See the [installed acceptance and rollback record](engineering/2026-10-23-result-integration-installed-acceptance.md) and the earlier [source review](engineering/2026-10-16-result-integration-review-and-acceptance.md).
 
-The installed task/workspace runtime records ready results. The commands below describe the candidate CLI/API and require a separately approved installation of a compatible core with `integrations.v1`. Opening an existing project never migrates it. Candidate new stores use core schema 3; existing schema-1/2 stores need an explicit `project upgrade --preview`, then an individually approved apply using that preview's exact token. Schema 2 retains task support; integration requires 3. Engine and registry schemas remain 1. An old runtime refuses schema 3; runtime rollback cannot downgrade databases. See [store upgrades](task-workspaces.md#upgrade-an-existing-store).
+The installed core advertises `integrations.v1`. Opening an existing project never migrates it. New stores use core schema 3; existing schema-1/2 stores need an explicit `project upgrade --preview`, then an individually approved apply using that preview's exact token. Schema 2 retains task support; integration requires 3. Engine and registry schemas remain 1. An old runtime refuses schema 3; runtime rollback cannot downgrade databases. See [store upgrades](task-workspaces.md#upgrade-an-existing-store).
 
 ## What is reviewed
 
@@ -14,7 +14,7 @@ A parent can become ready when children are ready/cancelled, but root integratio
 
 ## Prepare and inspect an exact revision
 
-Examples are templates for a later approved runtime or disposable development fixture. Replace uppercase IDs/tokens and revision numbers with values from the exact response you inspected. Commands here were grammar-checked; no mutation example was executed during this documentation pass.
+Examples are templates for the installed runtime. Replace uppercase IDs/tokens and revision numbers with values from the exact response you inspected. The installed acceptance exercised preparation, approval and apply on a disposable project; these examples do not authorize application to an existing user project.
 
 ```bash
 solace integration prepare PROJECT ROOT_TASK --result RESULT --expected-revision 7 --wait --json

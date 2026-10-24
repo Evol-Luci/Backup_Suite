@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — integration candidate, 2026-10-22
+## Locally installed manual integration — 2026-10-23
 
 ### Added
 
@@ -11,8 +11,8 @@
 
 ### Documentation
 
-- Added operator guide, candidate acceptance record, concrete installer preview and fresh-context handoff. The required source runtime gates and independent whole-branch review passed on 2026-10-23. This candidate is not installed.
-- Recorded current sandbox socket/systemd/display failures without replacing them with historical passes. Runtime rollback preserves databases and cannot make schema-3 stores readable by old runtimes.
+- Added operator guide, source review record, installer preview and [installed acceptance](docs/engineering/2026-10-23-result-integration-installed-acceptance.md). The required source gates and independent whole-branch review passed; the installed service passed 22 disposable checks and retained receipts across a restart.
+- Recorded historical sandbox socket/systemd/display failures and the subsequent passing unrestricted gates. Runtime rollback preserves databases and cannot make schema-3 stores readable by old runtimes.
 
 Configured checks remain `not_run_by_solace`. Automatic policy, check runner, forward undo, GUI, rename heuristics, deeper nesting, GC, replication and Git synchronization remain deferred.
 
@@ -35,4 +35,4 @@ Configured checks remain `not_run_by_solace`. Automatic policy, check runner, fo
 - Recorded 192 passing tests and successful disposable installed acceptance on 2026-10-16.
 - Refreshed installed-status guidance and preserved a standalone rollback script before source-branch cleanup.
 
-This installed milestone saves results without applying them to the original project. The integration candidate above remains separate from this installed runtime.
+This earlier installed milestone saved results without applying them to the original project. Manual integration was installed on 2026-10-23 as recorded above.

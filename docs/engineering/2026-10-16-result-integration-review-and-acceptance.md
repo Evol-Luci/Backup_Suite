@@ -1,5 +1,7 @@
 # Manual result integration: candidate review and acceptance
 
+This is the source-phase record written before installation. The runtime was subsequently installed and passed [disposable live acceptance on 2026-10-23](2026-10-23-result-integration-installed-acceptance.md). Statements below about installation being pending describe this earlier review phase.
+
 Updated 2026-10-23. This records the source candidate on `codex/task-integration-design`, with Task 11 committed as `0d71e15` and Task 12 documentation in the following branch commit. The Task 12 documentation/preview subset passed independent review after its one acceptance-sequence correction; `task-12-review.md` and `task-12-rereview.md` in the execution directory record the finding and its closed scoped review. The manual integration candidate is **not installed or live accepted**. The required source runtime gates pass. Independent whole-branch review found no code issue and one Important stale-documentation finding, corrected in this record and linked guidance. The source milestone is complete; installation and installed-candidate acceptance require separate authorization.
 
 ## Implemented source and review

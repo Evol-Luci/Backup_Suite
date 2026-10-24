@@ -1,5 +1,7 @@
 # Manual result integration: agent handoff
 
+This handoff records the preinstallation source milestone. The user subsequently authorized installation; runtime `f877c3c2f0ee11a0` is active and passed [disposable installed acceptance](2026-10-23-result-integration-installed-acceptance.md). Historical pending-install statements below describe the earlier source-only phase.
+
 Updated: 2026-10-23. This is the continuation entry point for a fresh context.
 
 ## Current state
