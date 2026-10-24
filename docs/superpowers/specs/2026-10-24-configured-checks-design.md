@@ -1,0 +1,60 @@
+# Configured checks for integration candidates
+
+**Status:** Proposed for review, 2026-10-24
+**Depends on:** Installed manual result integration at `1a59d4a`
+**Next slices:** Automatic integration policy, forward undo, GUI review/status
+
+## Intent
+
+Solace should run a project's chosen local checks on the exact child-to-parent or parent-to-source candidate that a person reviews. Today approval and receipts say `not_run_by_solace`; a person may run checks outside Solace, but Solace cannot verify or retain that result. This slice adds project-approved check profiles, bounded execution, and durable evidence. It does not apply a result automatically.
+
+The user chose **project-approved command profiles; tasks may select one**. The project owner controls the command definitions. A task or agent can request an existing profile but cannot submit arbitrary commands as part of a task or integration request. This is a workflow authority rule within the existing same-user local-socket model, not a hostile same-user process security guarantee. The later automatic-policy slice must use the same owner-controlled policy surface.
+
+## Goals and limits
+
+- Show a clear local command list, where it ran, its outcome, duration, and a bounded output excerpt. Machine-readable output includes stable IDs, full exit/timeout status, hashes and evidence links.
+- Bind a passing result to a single prepared, conflict-free plan revision, candidate checkpoint and manifest digest, capture profile, check-profile revision and digest, and reviewed target state. Any changed candidate or profile requires a new run.
+- Preserve failed, timed-out, cancelled, interrupted and stale runs as evidence. None counts as a pass. Never label user-reported or unchecked results as Solace-run passes.
+- Keep check execution off the source and task workspaces. Commands operate on a private copy of the retained candidate. Applying still uses the original immutable candidate and the current manual approval/recovery path.
+- Keep the existing `--accept-unchecked` path available with its explicit warning. A person can instead approve with a passing run token for the exact candidate. Receipts retain which path was used and the check evidence ID.
+- Keep migration explicit: preview, consistent backup, then apply. No project silently changes schema when opened.
+
+This slice does not implement auto integration, command containers or network isolation, a general CI service, scheduling, remote runners, GUI controls, or promises that a check establishes correctness. A command can run arbitrary code with the Solace user's authority. Profile creation must explain this plainly and require an explicit local owner confirmation. Output can contain secrets and stays in the local project store with restrictive permissions.
+
+## Profile and selection
+
+Each project has zero or more named profiles. A profile is an ordered list of steps with a display name, executable plus argument vector, working directory fixed to the candidate root, per-step timeout, output cap, and optional environment additions. No implicit shell parsing or interpolation occurs. Users who deliberately need shell features may configure a shell executable and its arguments explicitly. Executable lookup and environment rules are displayed in the profile; no task-supplied environment, command or working directory is accepted. Reject empty vectors, NULs, relative working-directory escapes, invalid timeout/output bounds and duplicate names.
+
+Create/update/delete is a project-owner action through an explicit CLI/API flow that shows the effective commands and requires a fresh confirmation token. It creates an immutable profile revision and digest; old revisions stay available to explain prior evidence. Deletion hides a profile from new selection without erasing history. The API must not treat a client-provided `actor` string as authorization. At this stage, the local OS user and an explicit confirmation ceremony are the authority; Solace does not claim protection from another process running as that same user.
+
+A root task may select the project's active profile by ID when created or changed before its next result is marked ready. Children inherit that selection by default; a task may select a different approved project profile before its next result is ready, but may not define commands. Once a result is ready, its profile selection is fixed through integration; changing it requires a new task result and plan. If no profile is selected, `check run` returns `CHECK_PROFILE_MISSING` with a setup hint. A profile revision is pinned when a run begins. Editing or retiring the selected project profile after a run does not rewrite old evidence; it makes that result ineligible for current approval until the active revision is run again. The exact selection policy for a task is visible in task and integration show responses. The later automatic-policy design must prevent a task from selecting a weaker profile to bypass project-required checks.
+
+## Running the exact candidate
+
+`solace integration check run PROJECT PLAN --revision N --profile PROFILE --wait` first confirms the plan is current, prepared and conflict-free, and that the selected profile is approved for the task. It reuses the plan's existing exact-target and immutable-snapshot validation, then reserves a run ID and private staging path in durable metadata. A command run never uses the live source, parent workspace, child workspace or an export directory as its working tree.
+
+The runner materializes the retained candidate checkpoint into a fresh private directory inside the project's owned store, verifies file bytes and modes against M before launch, and records its directory identity. The entire ordered step list runs in that copy so build artifacts from an earlier step are available to a later one. The first input is M; commands may generate or modify files in the copy. These changes are never imported into the integration candidate. The run's evidence says exactly that the profile started from M, not that every step saw an unchanged tree. The store's protected-path and symlink rules apply to materialization; command execution itself is trusted user code and may access paths outside the copy, so the UI/CLI must not call it a sandbox.
+
+The runner sets a documented minimal inherited environment, adds the profile's fixed variables, sets the current directory to the copy, starts each step in its own process group, captures stdout and stderr separately up to configured caps, records SHA-256 and byte counts for the complete streams, and enforces timeout/cancellation with TERM then KILL of the group. The runner drains and hashes full streams but retains only capped captures; it reports truncation and total byte counts. It records launch errors, exit codes and signals precisely. Limits keep the core and responses bounded. Commands run sequentially; a failed step stops the remaining steps by default. A run is owned by the core, continues if a `--wait` client disconnects, and can be cancelled by an explicit `check cancel` request. Core restart leaves a durable `interrupted` run, never `passed`; it must terminate any surviving process group it can safely identify before cleanup. The staging copy stays retained until the run reaches a terminal state and its cleanup is independently verified; cleanup must not delete a path whose stored identity changed. The retained captures and metadata remain after safe copy cleanup; Solace does not promise full log retention.
+
+Before declaring pass, recheck the current plan revision, M digest, selected profile revision/digest, and retained target binding. A changed binding yields `stale`, even if every command exited zero. Do not convert a stale run to pass on retry. A new run gets a new ID. Read APIs expose status and bounded step details without returning unbounded logs; local evidence files can be inspected explicitly. Run and status calls support request-ID replay.
+
+## Approval and receipts
+
+Approval accepts exactly one of two modes: `--check-run RUN` with a successful, current binding, or `--accept-unchecked`. The checked path embeds run ID, profile revision/digest, candidate M digest and pass status in the immutable approval binding. A checked approval is revoked by a new plan revision or changed profile selection, just as the existing review token is. At apply reservation and at receipt commit, Solace revalidates the approved evidence binding without rerunning commands. A later profile edit cannot mutate a prior passed record; whether it invalidates a pending application follows the profile-selection rule above and is checked before apply. An in-progress, failed, stale or interrupted run cannot authorize apply.
+
+The receipt distinguishes `passed` with check-run ID from `not_run_by_solace` with explicit unchecked acknowledgement. It preserves the binding and step summaries so a later reader can see what ran even if the profile is retired. Existing schema-3 approvals and receipts keep their historical unchecked meaning. No invented pass is added during migration.
+
+## Storage, operations and compatibility
+
+Use an additive project schema version 4 with profile, profile-revision, selection, run and step/evidence tables plus immutable result protections. Extend the existing `project upgrade --preview` token and consistent-backup flow for 3→4. Runtime code must continue to read and operate schema-3 projects for manual integration. Version-4 projects remain readable through the current service for task and manual integration methods after upgrade. No installed store is upgraded as part of a source merge or installation; each store requires its own preview and apply. On-disk run directories are registered ownership boundaries so capture, exports, integration and GC cannot consume them accidentally.
+
+Expose profile list/show/configure, task selection, run/show/list/cancel, and approval choice through the existing Unix-socket API and CLI with strict parameters, bounded pages and clear errors. Keep event records for profile revisions, runs and approvals. A crash between reservation, process launch, evidence write and cleanup must never result in a false pass or lost ownership claim. A pass is committed only after all step records and final binding have been durably written. The service startup scan marks orphaned running runs interrupted and reports any unsafe cleanup separately.
+
+## Acceptance
+
+Tests cover profile authority and exact selection, argument-vector handling, private candidate materialization, changed/corrupt CAS bytes, symlink/path substitution, output caps, timeout and process-group termination, signal/launch errors, interruption/restart, request replay, changed M/profile/target invalidation, unchecked compatibility, checked approval and receipt round trips, and 3→4 preview/backup/replay. Run a real local-socket disposable project flow with one passing and one failing command. Inspect source and workspace bytes before and after check execution, and verify a check-created artifact is absent from the applied candidate. Keep installed-runtime acceptance and any existing-store upgrade as separate gates.
+
+## Builder choices and follow-on order
+
+The builder may choose internal class layout and exact command names while preserving these API and evidence semantics. Calls made for this draft: selection freezes when a task result becomes ready; a disconnected waiting client does not cancel its core-owned run; only bounded output captures are retained. The first implementation plan should split schema/profile management, runner/evidence, approval/receipt binding, protocol/CLI, and crash/live acceptance into reviewable increments. After this slice passes source and installed-runtime checks, design automatic integration around only current passing evidence; then forward undo, GUI review/status, Git import/export, and storage lifecycle in the approved architecture's order. Each later subsystem gets its own detailed design, plan and acceptance gate.
