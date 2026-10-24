@@ -42,7 +42,7 @@ class IntegrationClaims:
 
     def claim_access(self, db, operation_id, paths):
         """Short-lived reader ownership uses target claims, never a fake journal."""
-        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] != 3:
+        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] not in (3, 4):
             for path in paths: self.assert_access(Path(path), operation_id=operation_id)
             return
         for path in dict.fromkeys(str(Path(path).absolute()) for path in paths):
@@ -87,7 +87,7 @@ class IntegrationClaims:
             self.catalog.notify()
 
     def release(self, db, operation_id: str) -> None:
-        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
             db.execute('DELETE FROM integration_claims WHERE operation_id=?', (operation_id,))
         self.tasks.release(db, operation_id)
 

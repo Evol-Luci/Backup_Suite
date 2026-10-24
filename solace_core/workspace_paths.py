@@ -150,13 +150,15 @@ class WorkspacePaths:
                 catalog.validate(require_root=False)
                 with readonly_database(catalog.database) as db:
                     version=db.execute('SELECT schema_version FROM core_metadata').fetchone()[0]
-                    if version in (2, 3):
+                    if version in (2, 3, 4):
                         locations += [(Path(r[0]),r[1]) for r in db.execute('SELECT path,id FROM workspaces')]
                         for r in db.execute('SELECT staging_path,final_path,workspace_id,phase FROM workspace_intents'):
                             locations += [(Path(path),r[2]) for path in r[:2]
                                           if path and (r[3]!='abandoned' or os.path.lexists(path))]
                         locations += [(Path(r[0]),None) for r in db.execute('SELECT path FROM workspace_caches')]
-                    if version == 3:
+                    if version == 4:
+                        locations += [(Path(r[0]),None) for r in db.execute('SELECT staging_path FROM check_runs')]
+                    if version in (3, 4):
                         for table,column in (('integration_journals','journal_path'),('integration_exports','path')):
                             locations += [(Path(r[0]),None) for r in db.execute(f'SELECT {column} FROM {table}')]
                         query = 'SELECT path FROM integration_claims'
@@ -177,7 +179,10 @@ class WorkspacePaths:
             try:
                 catalog.validate(require_root=False)
                 with readonly_database(catalog.database) as db:
-                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4:
+                        for path,run,state in db.execute('SELECT staging_path,id,state FROM check_runs'):
+                            claims.append(dict(path=path,operation_id='check:'+run,kind='check',phase=state))
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
                         for path,operation,kind,phase in db.execute(
                             'SELECT c.path,c.operation_id,c.kind,j.phase FROM integration_claims c '
                             'LEFT JOIN integration_journals j ON c.operation_id=j.operation_id'):
