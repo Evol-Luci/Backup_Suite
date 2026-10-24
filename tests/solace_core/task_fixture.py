@@ -1,6 +1,7 @@
 """Disposable catalogs and API helpers, never the installed runtime."""
 import unittest
 import uuid
+import os
 import test_catalog
 import test_service
 
@@ -17,7 +18,9 @@ class CatalogCase(unittest.TestCase):
         return dict(version=1,id=str(uuid.uuid4()),method=method,params=params,actor='test')
 
 class TaskCase(unittest.TestCase):
-    temporary_parent="/var/tmp"
+    # Explicit test-only override for restricted runners; normal fixtures retain
+    # their persistent temporary parent. Subprocesses inherit the same setting.
+    temporary_parent=os.environ.get('SOLACE_TEST_TMPDIR', '/var/tmp')
     call=test_service.ServiceTests.call
     wait_operation=test_service.ServiceTests.wait_operation
     request=CatalogCase.request

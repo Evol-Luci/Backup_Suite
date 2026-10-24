@@ -98,7 +98,11 @@ class ReviewRegressionTests(unittest.TestCase):
         catalog.transition(operation,'running')
         store=Path(self.registry.get(self.project)['store'])
         self.service.close();store.rename(self.base/'offline-store')
-        self.service=CoreService(self.registry);self.addCleanup(self.service.close)
+        with self.assertLogs('solace_core.maintenance',level='WARNING') as diagnostics:
+            self.service=CoreService(self.registry)
+        self.addCleanup(self.service.close)
+        self.assertEqual([record.getMessage() for record in diagnostics.records],
+                         ['prompt maintenance project='+self.project+' exception=CoreError'])
         (self.base/'offline-store').rename(store)
         outcome=self.call('operation.show',project=self.project,operation=operation)
         self.assertEqual(outcome['state'],'interrupted')
@@ -123,7 +127,11 @@ class ReviewRegressionTests(unittest.TestCase):
         catalog.transition(operation,'running')
         original=Path(self.registry.get(self.project)['store'])
         self.service.close();moved=self.base/'moved-store';original.rename(moved)
-        self.service=CoreService(self.registry);self.addCleanup(self.service.close)
+        with self.assertLogs('solace_core.maintenance',level='WARNING') as diagnostics:
+            self.service=CoreService(self.registry)
+        self.addCleanup(self.service.close)
+        self.assertEqual([record.getMessage() for record in diagnostics.records],
+                         ['prompt maintenance project='+self.project+' exception=CoreError'])
         result=self.service.handle(self.request('project.relink',project=self.project,
             root=str(self.root),store=str(moved),confirmed_root=str(self.root)))
         self.assertTrue(result['ok'],result)
@@ -132,7 +140,11 @@ class ReviewRegressionTests(unittest.TestCase):
     def test_unavailable_store_unregister_refused_when_task_ownership_is_unknown(self):
         original=Path(self.registry.get(self.project)['store'])
         self.service.close();moved=self.base/'moved-store';original.rename(moved)
-        self.service=CoreService(self.registry);self.addCleanup(self.service.close)
+        with self.assertLogs('solace_core.maintenance',level='WARNING') as diagnostics:
+            self.service=CoreService(self.registry)
+        self.addCleanup(self.service.close)
+        self.assertEqual([record.getMessage() for record in diagnostics.records],
+                         ['prompt maintenance project='+self.project+' exception=CoreError'])
         result=self.service.handle(self.request('project.unregister',project=self.project))
         self.assertFalse(result['ok'],result)
         self.assertEqual(result['error']['code'],'STORE_UNAVAILABLE')

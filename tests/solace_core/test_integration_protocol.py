@@ -298,14 +298,49 @@ class SocketTests(IntegrationCase):
 
     def test_notify_exceptions_preserve_committed_approval_export_and_apply(self):
         _,_,plan=self.prepared();catalog=self.service.catalog(self.project)
-        with patch.object(catalog,'notify',side_effect=RuntimeError('notification failed')):
+        with self.assertLogs('solace_core.integration_operations',level='ERROR') as diagnostics, patch.object(catalog,'notify',side_effect=RuntimeError('notification failed')):
             approval,approved=self.approve(plan)
             request=self.apply_request(plan,approved);accepted=self.wire(request);self.assertTrue(accepted['ok'],accepted)
             done=self.wait_operation(accepted['result']['operation_id']);self.assertEqual(done['state'],'succeeded',done)
             export=self.call('integration.export',project=self.project,plan=plan['plan_id'],revision=1,destination=str(self.base/'notify-export'))
             self.assertEqual(self.wait_operation(export['operation_id'])['state'],'succeeded')
+            drained=threading.Event()
+            self.service.coordinator(self.project).submit(uuid.uuid4().hex,drained.set)
+            self.assertTrue(drained.wait(5),'Notification workers did not finish')
+        self.assertEqual([record.getMessage() for record in diagnostics.records],
+                         ['integration notification unavailable exception=RuntimeError']*4)
         self.assertEqual(self.wire(approval),approved);self.assertEqual(self.wire(request),accepted)
         with catalog.connect() as db:self.assertEqual(db.execute('SELECT phase FROM integration_exports').fetchone()[0],'published')
+
+    def test_paused_integration_keeps_other_project_checkpoint_available(self):
+        from solace_core.integration_publish import IntegrationPublisher
+        other_root=self.base/'other-project';other_root.mkdir();(other_root/'keep').write_bytes(b'other project')
+        other=self.call('project.add',root=str(other_root))['id']
+        _,_,plan=self.prepared();_,approved=self.approve(plan)
+        entered,release=threading.Event(),threading.Event()
+        original_init=IntegrationPublisher.__init__
+        def initialize(publisher,service,catalog,**kwargs):
+            original_init(publisher,service,catalog,**kwargs)
+            if catalog.registration['id']==self.project:
+                def pause(point):
+                    if point=='intent:0':
+                        entered.set()
+                        if not release.wait(10): raise RuntimeError('Disposable integration pause was not released')
+                publisher.failpoint=pause
+        with patch.object(IntegrationPublisher,'__init__',initialize):
+            try:
+                accepted=self.wire(self.apply_request(plan,approved));self.assertTrue(accepted['ok'],accepted)
+                self.assertTrue(entered.wait(5),'Integration did not reach its durable action intent')
+                self.assertFalse((self.root/'file').exists())
+                blocked=self.wire(self.request('checkpoint.create',message='claimed target'))
+                self.assertEqual(blocked['error']['code'],'INTEGRATION_TARGET_BUSY')
+                operation=self.call('checkpoint.create',project=other,message='independent capture')['operation_id']
+                outcome=self.wait_operation(operation,project=other)
+                self.assertEqual(outcome['state'],'succeeded',outcome)
+                self.assertEqual(self.service.catalog(self.project).get_operation(accepted['result']['operation_id'])['state'],'running')
+                self.assertEqual((other_root/'keep').read_bytes(),b'other project')
+            finally: release.set()
+            self.assertEqual(self.wait_operation(accepted['result']['operation_id'])['state'],'succeeded')
 
     def test_recovery_resume_and_restore_before_over_socket_preserve_history(self):
         from solace_core.integration_publish import IntegrationPublisher
@@ -394,6 +429,52 @@ class SocketTests(IntegrationCase):
             tables=['operations','events','task_requests']+[r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'integration_%'")]
             for table in tables:self.assertNotIn(canary,str([tuple(r) for r in db.execute('SELECT * FROM '+table)]),table)
         self.assertNotIn(canary,'\n'.join(records))
+
+    def prompt_change_after_approval(self, mode):
+        from datetime import datetime, timedelta, timezone
+        from solace_core.prompts import PromptStore
+        canary='REDACTED-INTEGRATION-CANARY-'+uuid.uuid4().hex
+        task=self.create_task(prompt=canary,prompt_policy='days',prompt_days=1)
+        workspace=Path(self.start(task)['path']);(workspace/'file').write_bytes(b'incoming')
+        result=self.wait_operation(self.mutate('task.ready',task)['operation_id'])['result']['checkpoint_id']
+        prepared=self.wire(self.prepare_request(task,result))
+        done=self.wait_operation(prepared['result']['operation_id'])
+        plan=self.call('integration.show',project=self.project,plan=done['result']['plan_id'])
+        approval,approved=self.approve(plan)
+        catalog=self.service.catalog(self.project)
+        if mode=='deleted': self.mutate('task.prompt.delete',task)
+        else:
+            future=datetime.now(timezone.utc)+timedelta(days=2)
+            # At-rest status/body still say available while the read-time
+            # expiry clock says expired: that mismatch must not expose bytes.
+            with catalog.connect() as db:
+                self.assertEqual(db.execute('SELECT status,body FROM task_prompts WHERE task_id=?',(task,)).fetchone()[:],('available',canary))
+            with patch('solace_core.prompts.utcnow',return_value=future):
+                expired=self.call('task.prompt.show',project=self.project,task=task)
+                self.assertEqual(expired['status'],'expired');self.assertNotIn('body',expired)
+                self.assertEqual(self.wire(approval),approved)
+                self.assertNotIn(canary,json.dumps(self.call('integration.show',project=self.project,plan=plan['plan_id'])))
+            self.assertEqual(PromptStore(catalog,now=lambda:future).purge_expired(),1)
+        prompt=self.call('task.prompt.show',project=self.project,task=task)
+        self.assertEqual(prompt['status'],mode);self.assertNotIn('body',prompt)
+        # Historic approval replay stays exact, but its pinned task revision
+        # cannot authorize fresh application after redaction or expiry.
+        self.assertEqual(self.wire(approval),approved)
+        rejected=self.wire(self.apply_request(plan,approved))
+        self.assertFalse(rejected['ok'],rejected)
+        self.assertEqual(rejected['error']['code'],'INTEGRATION_PLAN_STALE')
+        self.assertFalse((self.root/'file').exists())
+        self.assertNotIn(canary,json.dumps([approved,rejected,prompt]))
+        with catalog.connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM integration_journals').fetchone()[0],0)
+            for table in ('integration_approvals','integration_receipts','integration_revisions','operations','events','task_requests'):
+                self.assertNotIn(canary,str([tuple(row) for row in db.execute('SELECT * FROM '+table)]),table)
+
+    def test_redacted_prompt_revision_cannot_reuse_approval_or_leak_body(self):
+        self.prompt_change_after_approval('deleted')
+
+    def test_expired_prompt_revision_cannot_reuse_approval_or_leak_body(self):
+        self.prompt_change_after_approval('expired')
 
     def test_wrong_typed_fields_rejected_over_socket_before_dispatch(self):
         for method,params in VARIANTS:
@@ -503,7 +584,10 @@ class SocketTests(IntegrationCase):
         # startup uses when deciding whether cache reconciliation is necessary.
         self.call('project.relink',project=self.project,root=str(self.root),store=str(catalog.store),confirmed_root=str(self.root))
         (catalog.store/'objects').rename(catalog.store/'offline-objects')
-        self.restart()
+        with self.assertLogs('solace_core.maintenance',level='WARNING') as diagnostics:
+            self.restart()
+        self.assertEqual([record.getMessage() for record in diagnostics.records],
+                         ['prompt maintenance project='+self.project+' exception=CoreError'])
         self.assertEqual(self.wire(approval),approved)
         self.assertEqual(self.call('integration.show',project=self.project,plan=plan['plan_id'])['state'],'approved')
         # Force the stopped-core reconciliation condition. Replay and metadata

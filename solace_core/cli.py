@@ -152,7 +152,7 @@ def main(argv=None):
             sys.stdout.buffer.write(text.encode('utf-8'));sys.stdout.buffer.flush()
         elif args.command=='integration' and not as_json:
             from .integration_cli import emit as emit_integration
-            emit_integration(result,method,params)
+            emit_integration(result,method,params,socket=globals_.socket)
         else: emit(result,as_json)
         if not result['ok']:return exit_code(result['error']['code'])
         if getattr(args,'wait',False) and result['result'].get('state') in ('failed','interrupted'):return 1

@@ -129,6 +129,34 @@ class PublishTests(IntegrationCase):
         self.assertTrue(self.displaced_version_exists(journal, b'original'))
         self.assert_retained(journal)
 
+    def test_fifo_occupying_vacated_name_is_preserved_without_opening(self):
+        _, journal = self.staged_replacement()
+        def interleave(name):
+            if name == 'old_moved:0': os.mkfifo(self.root/'file',0o600)
+        self.publisher.failpoint = interleave
+        with self.assertRaises(CoreError): self.publisher.publish(journal)
+        self.assertTrue(stat.S_ISFIFO((self.root/'file').lstat().st_mode))
+        self.assertTrue(self.displaced_version_exists(journal,b'original'))
+        self.assertTrue(any(path.read_bytes()==b'incoming' for path in (journal.path/'new').iterdir()))
+        self.assert_retained(journal)
+
+    def test_enospc_writing_stage_retains_original_and_partial_evidence(self):
+        (self.root/'file').write_bytes(b'original')
+        plan = self.plan_with(lambda root: (root/'file').write_bytes(b'incoming'))
+        reserved = self.reserve(plan)
+        import solace_core.integration_publish as publication
+        original = publication._write
+        def full(fd, data):
+            if Path(os.readlink('/proc/self/fd/'+str(fd))).parent == reserved.path/'new':
+                os.write(fd,data[:2])
+                raise OSError(errno.ENOSPC,'disposable full staging device')
+            return original(fd,data)
+        with patch.object(publication,'_write',full), self.assertRaises(CoreError):
+            self.publisher.stage(reserved.operation_id,plan)
+        self.assertEqual((self.root/'file').read_bytes(),b'original')
+        self.assertEqual([path.read_bytes() for path in (reserved.path/'new').iterdir()],[b'in'])
+        self.assert_retained(reserved)
+
     def test_equal_byte_foreign_inode_is_not_displaced(self):
         _, journal = self.staged_replacement()
         (self.root/'file').rename(self.root/'saved')

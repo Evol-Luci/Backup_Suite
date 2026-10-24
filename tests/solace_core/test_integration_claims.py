@@ -580,7 +580,11 @@ class ClaimsTests(IntegrationCase):
         self.service.close()
         moved_root=self.base/'moved-source';self.root.rename(moved_root)
         moved_store=self.base/'moved-store';Path(registration['store']).rename(moved_store)
-        self.service=CoreService(self.registry,config=self.config);self.addCleanup(self.service.close)
+        with self.assertLogs('solace_core.maintenance',level='WARNING') as diagnostics:
+            self.service=CoreService(self.registry,config=self.config)
+        self.addCleanup(self.service.close)
+        self.assertEqual([record.getMessage() for record in diagnostics.records],
+                         ['prompt maintenance project='+self.project+' exception=CoreError'])
         request=self.request('project.relink',root=str(moved_root),store=str(moved_store),confirmed_root=str(moved_root))
         response=self.service.handle(request)
         self.assertTrue(response['ok'],response)

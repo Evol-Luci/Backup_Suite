@@ -1,5 +1,6 @@
 """Pinned command construction; the socket workflow lives in acceptance tests."""
 import unittest
+import shlex
 from contextlib import redirect_stdout
 from io import StringIO
 from solace_core.cli import _parser
@@ -106,6 +107,23 @@ class IntegrationCLITests(unittest.TestCase):
                  'integration.apply',dict(project=ID,plan=ID))
         self.assertIn('INTEGRATION_RECOVERY_REQUIRED',output.getvalue())
         self.assertIn('solace integration recovery show '+ID+' '+'c'*32,output.getvalue())
+
+    def test_human_content_continuation_round_trips_leading_option_filename(self):
+        from solace_core.integration_cli import emit
+        path = '--literal'
+        params = dict(project=ID, plan=ID, revision=2, path=path,
+                      version='incoming', offset=0)
+        output = StringIO()
+        with redirect_stdout(output):
+            emit(dict(ok=True, result=dict(revision=2, next_offset=49152)),
+                 'integration.diff', params)
+        line = next(line for line in output.getvalue().splitlines()
+                    if line.startswith('Next command: '))
+        command = shlex.split(line.removeprefix('Next command: '))
+        self.assertEqual(command[:2], ['solace', 'integration'])
+        self.assertEqual(command[-1], '--json')
+        method, actual = self.build(*command[2:-1])
+        self.assertEqual((method, actual), ('integration.diff', dict(params, offset=49152)))
 
 
 if __name__=='__main__': unittest.main()

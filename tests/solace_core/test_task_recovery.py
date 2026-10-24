@@ -70,7 +70,11 @@ class RecoveryTests(TaskCase):
     def test_unavailable_store_defers_recovery_and_dirty_final_is_not_adopted(self):
         (self.root/'file').write_text('baseline');task=self.create_task();request=self.crash(task,'after_rename')
         record=self.registry.get(self.project);store=Path(record['store']);offline=store.with_name('offline')
-        store.rename(offline);self.reopen()
+        store.rename(offline)
+        with self.assertLogs('solace_core.maintenance',level='WARNING') as diagnostics:
+            self.reopen()
+        self.assertEqual([record.getMessage() for record in diagnostics.records],
+                         ['prompt maintenance project='+self.project+' exception=CoreError'])
         self.assertTrue(any(r.get('error') for r in self.service.recovery))
         offline.rename(store);operation=self.operation(request)
         inspection=self.call('workspace.recovery.show',project=self.project,operation=operation)
@@ -160,7 +164,10 @@ class RecoveryTests(TaskCase):
     def test_explicit_store_relink_preserves_recovery_and_relocates_verified_base_cache(self):
         (self.root/'file').write_text('baseline');parent=self.create_task();request=self.crash(parent,'after_stage')
         original=Path(self.registry.get(self.project)['store']);moved=original.with_name('relocated-store');original.rename(moved)
-        self.reopen()
+        with self.assertLogs('solace_core.maintenance',level='WARNING') as diagnostics:
+            self.reopen()
+        self.assertEqual([record.getMessage() for record in diagnostics.records],
+                         ['prompt maintenance project='+self.project+' exception=CoreError'])
         self.call('project.relink',project=self.project,root=str(self.root),store=str(moved),confirmed_root=str(self.root))
         operation=self.operation(request)
         result=self.wait_operation(self.recover(operation,parent)['operation_id']);self.assertEqual(result['state'],'succeeded',result)

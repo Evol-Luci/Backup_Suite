@@ -108,6 +108,33 @@ class RecoveryTests(IntegrationCase):
         with self.assertRaises(CoreError): self.recover(journal)
         self.assertFalse(self.root.exists())
 
+    def test_missing_journal_is_deferred_and_never_recreated(self):
+        _, journal = self.staged_replacement();self.interrupt(journal,'old_moved:0')
+        moved=self.base/'offline-journal';journal.path.rename(moved)
+        original={p.relative_to(moved):p.read_bytes() for p in moved.rglob('*') if p.is_file()}
+        self.restart()
+        self.assertEqual(self.recovery.show(journal.operation_id)['validation'],'deferred')
+        with self.assertRaises(CoreError): self.recover(journal)
+        self.assertFalse(journal.path.exists());self.assertFalse((self.root/'file').exists())
+        self.assertEqual({p.relative_to(moved):p.read_bytes() for p in moved.rglob('*') if p.is_file()},original)
+        with self.assertRaises(CoreError): self.service.workspace_paths.assert_access(self.root)
+        moved.rename(journal.path)
+        _,_,outcome=self.recover(journal)
+        self.assertEqual(outcome['state'],'succeeded',outcome)
+
+    def test_symlink_winner_blocks_restoration_without_following_it(self):
+        _, journal = self.staged_replacement();self.interrupt(journal,'new_published:1')
+        incoming=self.base/'saved-incoming';(self.root/'file').rename(incoming)
+        foreign=self.base/'foreign';foreign.write_bytes(b'foreign winner')
+        (self.root/'file').symlink_to(foreign)
+        self.restart()
+        with self.assertRaises(CoreError): self.recover(journal,'restore-before')
+        self.assertTrue((self.root/'file').is_symlink())
+        self.assertEqual(foreign.read_bytes(),b'foreign winner')
+        self.assertEqual(incoming.read_bytes(),b'incoming')
+        self.assertTrue(self.displaced_version_exists(journal,b'original'))
+        with self.assertRaises(CoreError): self.service.workspace_paths.assert_access(self.root)
+
     def test_restore_crashes_after_move_and_restarts_without_writes(self):
         _, journal = self.staged_replacement()
         self.interrupt(journal, 'new_published:1')

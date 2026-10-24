@@ -4,6 +4,7 @@ import json
 import io
 import logging
 import os
+import shlex
 from pathlib import Path
 import uuid
 import threading
@@ -67,6 +68,32 @@ class IntegrationAcceptanceTests(IntegrationCase):
         self.assertEqual(stale['error']['code'],'INTEGRATION_REVISION_CONFLICT')
         output=self.run_cli('integration','show',self.project,plan['plan_id']).stdout.decode()
         self.assertIn('Solace did not run checks',output);self.assertIn('solace integration diff',output)
+
+    def test_human_next_command_keeps_and_quotes_selected_socket(self):
+        task,result,_=self.ready_cli_task({'file':b'incoming'})
+        plan=self.plan(task,result)
+        moved=self.base/"custom 'socket'; name.sock"
+        self.path.rename(moved);self.path=moved
+        output=self.run_cli('integration','show',self.project,plan['plan_id']).stdout.decode()
+        line=next(line for line in output.splitlines() if line.startswith('Next command: '))
+        command=shlex.split(line.removeprefix('Next command: '))
+        self.assertIn('--socket',command)
+        self.assertEqual(command[command.index('--socket')+1],str(self.path))
+        # Execute the suggested command against the selected disposable core.
+        self.assertEqual(self.run_cli(*command[1:]).returncode,0)
+
+    def test_human_content_continuation_executes_leading_option_filename(self):
+        payload = b'x' * 50000
+        task, result, _ = self.ready_cli_task({'--literal': payload})
+        plan = self.plan(task, result)
+        output = self.run_cli('integration', 'diff', self.project, plan['plan_id'],
+                              '--revision', str(plan['revision']), '--path=--literal',
+                              '--version', 'incoming').stdout.decode()
+        line = next(line for line in output.splitlines() if line.startswith('Next command: '))
+        command = shlex.split(line.removeprefix('Next command: '))
+        page = json.loads(self.run_cli(*command[1:]).stdout)['result']
+        self.assertEqual(base64.b64decode(page['data']), payload[49152:])
+        self.assertIsNone(page['next_offset'])
 
     def test_root_child_source_bytes_ancestry_protection_and_prompt_privacy(self):
         (self.root/'base').write_bytes(b'base\r\nno-final-newline')

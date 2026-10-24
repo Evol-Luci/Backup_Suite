@@ -101,7 +101,7 @@ def prepare(client, args, project: str, request_id: str | None = None) -> tuple[
     return method,params
 
 
-def emit(value, method, params) -> None:
+def emit(value, method, params, *, socket=None) -> None:
     """Human guidance accompanies the exact bounded API projection."""
     from .cli import emit as emit_envelope
     if value['ok']:
@@ -139,7 +139,7 @@ def emit(value, method, params) -> None:
                 command += ['diff',project,plan,'--revision',str(summary['revision']),'--limit','128']
             elif method=='integration.diff':
                 if summary.get('next_offset') is not None:
-                    command += ['diff',project,plan,'--revision',str(summary['revision']),'--path',params['path'],'--version',params['version'],'--offset',str(summary['next_offset'])]
+                    command += ['diff',project,plan,'--revision',str(summary['revision']),'--path='+params['path'],'--version',params['version'],'--offset',str(summary['next_offset'])]
                 elif summary.get('next_after') is not None:
                     command += ['diff',project,plan,'--revision',str(summary['revision']),'--after',str(summary['next_after']),'--limit',str(params.get('limit',128))]
                 else: command += ['show',project,plan]
@@ -150,4 +150,5 @@ def emit(value, method, params) -> None:
             else:
                 command += ['receipt',project,params['receipt']]
                 if summary.get('next_after') is not None: command += ['--after',str(summary['next_after']),'--limit',str(params.get('limit',128))]
+    if socket is not None: command += ['--socket',str(socket)]
     print('Next command: '+shlex.join(command+['--json']),flush=True)
