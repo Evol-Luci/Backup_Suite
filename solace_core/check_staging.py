@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
 
 from .errors import CoreError, classify
@@ -140,6 +139,28 @@ class CheckStaging:
             if isinstance(error, CoreError): raise
             raise _unsafe() from error
 
+    @staticmethod
+    def _remove_contents(directory, device):
+        """Traverse only held directories; refuse changed names and mounts."""
+        for name in os.listdir(directory):
+            before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if stat.S_ISDIR(before.st_mode):
+                child = os.open(name, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW, dir_fd=directory)
+                try:
+                    opened = os.fstat(child)
+                    if opened.st_dev != device or not os.path.samestat(before, opened): raise _unsafe()
+                    CheckStaging._remove_contents(child, device)
+                    if not os.path.samestat(opened, os.stat(name, dir_fd=directory, follow_symlinks=False)):
+                        raise _unsafe()
+                    os.rmdir(name, dir_fd=directory)
+                finally:
+                    os.close(child)
+            else:
+                if not os.path.samestat(before, os.stat(name, dir_fd=directory, follow_symlinks=False)):
+                    raise _unsafe()
+                os.unlink(name, dir_fd=directory)
+        os.fsync(directory)
+
     def cleanup(self, run_id):
         row, container = self._row(run_id)
         if row['state'] in ('reserved','running'): raise _unsafe()
@@ -151,9 +172,18 @@ class CheckStaging:
                 self._owned(container, identity)
                 for name, expected in identity['children'].items():
                     self._check_identity(container/name, expected)
-                # fd-relative rmtree never traverses symlink substitutions.
-                if not shutil.rmtree.avoids_symlink_attacks: raise _unsafe()
-                shutil.rmtree(container.name, dir_fd=parent)
+                # Open once, bind that descriptor to the recorded inode, and
+                # delete through it. A later name replacement is never adopted.
+                owned = os.open(container.name, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW, dir_fd=parent)
+                try:
+                    opened = os.fstat(owned)
+                    if (opened.st_dev, opened.st_ino) != (identity['device'], identity['inode']): raise _unsafe()
+                    self._remove_contents(owned, opened.st_dev)
+                    if not os.path.samestat(opened, os.stat(container.name, dir_fd=parent, follow_symlinks=False)):
+                        raise _unsafe()
+                    os.rmdir(container.name, dir_fd=parent)
+                finally:
+                    os.close(owned)
                 os.fsync(parent)
                 if os.path.lexists(container): raise _unsafe()
             state = 'cleaned'

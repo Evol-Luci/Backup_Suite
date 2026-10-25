@@ -1,6 +1,7 @@
 """Private candidate copies and conservative retained ownership."""
 import json
 import os
+from unittest.mock import patch
 from pathlib import Path
 from integration_fixture import IntegrationCase
 from solace_core.check_staging import CheckStaging
@@ -82,3 +83,37 @@ class StagingTests(IntegrationCase):
         with self.catalog.connect(write=True) as db: db.execute("UPDATE check_runs SET state='interrupted' WHERE id=?",(self.run,))
         self.assertEqual(self.staging.cleanup(self.run)['cleanup_state'],'unsafe')
         self.assertEqual((staged.root/'keep').read_text(),'replacement')
+
+    def test_cleanup_substitution_after_identity_check_preserves_replacement(self):
+        plan,_=self.prepared(); staged=self.staging.stage(self.run,plan)
+        container=staged.root.parent; moved=container.with_name('moved-during-cleanup')
+        original=self.staging._check_identity
+        def substitute(path, identity):
+            original(path,identity)
+            if Path(path)==staged.tmpdir:
+                container.rename(moved); container.mkdir()
+                (container/'keep').write_text('replacement')
+        with self.catalog.connect(write=True) as db: db.execute("UPDATE check_runs SET state='interrupted' WHERE id=?",(self.run,))
+        with patch.object(self.staging,'_check_identity',side_effect=substitute):
+            result=self.staging.cleanup(self.run)
+        self.assertEqual(result['cleanup_state'],'unsafe')
+        self.assertEqual((container/'keep').read_text(),'replacement')
+        self.assertEqual((moved/'candidate'/'script').read_bytes(),b'candidate')
+
+    def test_cleanup_substitution_after_open_never_traverses_replacement(self):
+        plan,_=self.prepared(); staged=self.staging.stage(self.run,plan)
+        container=staged.root.parent; moved=container.with_name('moved-after-open')
+        original=CheckStaging._remove_contents
+        swapped=False
+        def substitute(fd, device):
+            nonlocal swapped
+            if not swapped:
+                swapped=True; container.rename(moved); container.mkdir()
+                (container/'keep').write_text('replacement')
+            return original(fd,device)
+        with self.catalog.connect(write=True) as db: db.execute("UPDATE check_runs SET state='interrupted' WHERE id=?",(self.run,))
+        with patch.object(CheckStaging,'_remove_contents',side_effect=substitute):
+            result=self.staging.cleanup(self.run)
+        self.assertEqual(result['cleanup_state'],'unsafe')
+        self.assertEqual((container/'keep').read_text(),'replacement')
+        self.assertTrue(moved.is_dir())
