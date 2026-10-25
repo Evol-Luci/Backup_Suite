@@ -157,7 +157,9 @@ class WorkspacePaths:
                                           if path and (r[3]!='abandoned' or os.path.lexists(path))]
                         locations += [(Path(r[0]),None) for r in db.execute('SELECT path FROM workspace_caches')]
                     if version == 4:
-                        locations += [(Path(r[0]),None) for r in db.execute('SELECT staging_path FROM check_runs')]
+                        for r in db.execute('SELECT staging_path FROM check_runs'):
+                            stage = Path(r[0])
+                            locations += [(stage,None),(stage.parent.parent/'check-evidence'/stage.name,None)]
                     if version in (3, 4):
                         for table,column in (('integration_journals','journal_path'),('integration_exports','path')):
                             locations += [(Path(r[0]),None) for r in db.execute(f'SELECT {column} FROM {table}')]
@@ -181,7 +183,8 @@ class WorkspacePaths:
                 with readonly_database(catalog.database) as db:
                     if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4:
                         for path,run,state in db.execute('SELECT staging_path,id,state FROM check_runs'):
-                            claims.append(dict(path=path,operation_id='check:'+run,kind='check',phase=state))
+                            for owned in (Path(path), Path(path).parent.parent/'check-evidence'/run):
+                                claims.append(dict(path=str(owned),operation_id='check:'+run,kind='check',phase=state))
                     if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
                         for path,operation,kind,phase in db.execute(
                             'SELECT c.path,c.operation_id,c.kind,j.phase FROM integration_claims c '
