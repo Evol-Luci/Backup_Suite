@@ -106,6 +106,13 @@ class TaskCatalog:
             task=uuid.uuid4().hex
             db.execute('INSERT INTO tasks VALUES (?,?,?,\'created\',1,?,NULL,?,?)',
                        (task,parent,title,json.dumps(effective,sort_keys=True),now,now))
+            from .check_selection import CheckSelection
+            if 'check_profile' in p:
+                from .schema import require_checks
+                require_checks(self.catalog)
+                CheckSelection.insert(db,task,p['check_profile'],1,now)
+            elif parent:
+                CheckSelection.copy_parent(db,parent,task,now)
             PromptStore(self.catalog,now=self.now).insert(db,task,supplied,mode,days,now)
             if parent:
                 db.execute('UPDATE tasks SET revision=revision+1,updated_at=? WHERE id=?',(now,parent))
@@ -150,6 +157,8 @@ class TaskCatalog:
         from .prompts import PromptStore
         with self.catalog.connect() as db:
             task=self.row(db,task_id)
+            from .check_selection import CheckSelection
+            task['check_profile']=CheckSelection.selected(db,task_id)
             task['profile']=json.loads(task.pop('profile_json'))
             task['prompt']=PromptStore(self.catalog,now=self.now).metadata(db,task_id)
             task.update(self.summary(db,task_id))

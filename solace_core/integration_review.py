@@ -110,6 +110,8 @@ class IntegrationReview:
                       task_id=plan['task_id'], result_id=plan['result_id'], target_key=plan['target_key'],
                       validated_at=row['validated_at'], counts=counts, manifest_sha256=row['manifest_sha256'],
                       checks='not_run_by_solace')
+        from .check_selection import CheckSelection
+        result['check_profile'] = CheckSelection.selected(db, plan['task_id'])
         if plan['state'] == 'prepared':
             result['review_token'] = row['review_token']
         return _bounded(result, SUMMARY_BYTES)

@@ -18,7 +18,7 @@ CREATE TABLE check_profile_revisions (
 );
 CREATE TABLE task_check_profiles (
  task_id TEXT PRIMARY KEY REFERENCES tasks(id), profile_id TEXT REFERENCES check_profiles(id),
- selection_revision INTEGER NOT NULL CHECK(selection_revision>=1), updated_at TEXT NOT NULL
+ selected_revision INTEGER NOT NULL CHECK(selected_revision>=1), selected_at TEXT NOT NULL
 );
 CREATE TABLE check_runs (
  id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, revision INTEGER NOT NULL,
