@@ -72,6 +72,43 @@ class ProcessTests(unittest.TestCase):
         result=CheckExecutor({'LANG':'C.UTF-8','PATH':'/usr/bin:/bin','FIXED':'yes'}).execute(step,self.stage,threading.Event(),lambda p,s:None)
         self.assertEqual(result.stdout,b'$(touch shell-ran); literal\n'); self.assertFalse((self.stage.root/'shell-ran').exists())
 
+    def test_missing_identity_fails_promptly_and_reaps_child(self):
+        processes = []
+        from solace_core import check_process
+        real_popen = check_process.subprocess.Popen
+        def launch(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            # Keep a regression from hanging the test runner indefinitely.
+            timer = threading.Timer(2, lambda: os.killpg(process.pid, signal.SIGKILL)
+                                    if process.returncode is None else None)
+            timer.start()
+            self.addCleanup(timer.join)
+            self.addCleanup(timer.cancel)
+            return process
+        started = time.monotonic()
+        with patch.object(check_process, 'process_start_time', return_value=None), \
+                patch.object(check_process.subprocess, 'Popen', side_effect=launch):
+            with self.assertRaisesRegex(RuntimeError, 'start identity'):
+                self.run_step('import time; time.sleep(60)')
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertIsNotNone(processes[0].returncode)
+        self.assertIsNone(process_start_time(processes[0].pid))
+
+    def test_identity_read_failure_during_timeout_cleans_group(self):
+        from solace_core import check_process
+        calls = 0
+        def lookup(pid):
+            nonlocal calls
+            calls += 1
+            return process_start_time(pid) if calls == 1 else None
+        started = time.monotonic()
+        with patch.object(check_process, 'process_start_time', side_effect=lookup):
+            result = self.run_step(self.child_code(), timeout=.2)
+        self.assertEqual(result.status, 'timed_out')
+        self.assertLess(time.monotonic() - started, 2)
+        self.assert_child_dead(result)
+
     def test_precancel_does_not_launch(self):
         cancel = threading.Event()
         cancel.set()

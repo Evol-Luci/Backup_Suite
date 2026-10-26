@@ -71,11 +71,24 @@ class CheckExecutor:
         def signal_group(sig):
             # Do not reap the leader until group cleanup is over: its zombie
             # reserves the PID/PGID even if it exits before its descendants.
-            if identity is not None and process_start_time(proc.pid) == identity:
+            if proc.returncode is not None:
+                return
+            observed = process_start_time(proc.pid)
+            if identity is None or observed is None:
+                # /proc can be unavailable even for our own live child. A
+                # successful WNOWAIT lookup proves direct-child ownership and
+                # leaves its PID reserved, so this group cannot be a reused PID.
+                # This fallback is local to this Popen, never recovery by PID.
                 try:
-                    os.killpg(proc.pid, sig)
-                except ProcessLookupError:
-                    pass
+                    os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                except ChildProcessError:
+                    return
+            elif observed != identity:
+                return
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                pass
 
         try:
             if cancel.is_set():
