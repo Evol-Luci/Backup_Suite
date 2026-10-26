@@ -1,10 +1,8 @@
 """Durable integration dispatch, FIFO acceptance and stage-aware publication outcomes."""
 from dataclasses import asdict
-import hashlib
 import json
 import logging
 from pathlib import Path
-import secrets
 import uuid
 
 from .errors import CoreError, classify
@@ -85,12 +83,8 @@ class IntegrationOperations:
 
     @staticmethod
     def _approval(db, plan_id, revision, raw):
-        digest = hashlib.sha256(raw.encode()).hexdigest()
-        row = db.execute('SELECT * FROM integration_approvals WHERE token_sha256=?',(digest,)).fetchone()
-        if (row is None or row['plan_id']!=plan_id or row['revision']!=revision or row['accepted_unchecked']!=1
-                or not secrets.compare_digest(row['token_sha256'],digest)):
-            stale('The supplied approval does not authorize this plan revision.')
-        return dict(id=row['id'],token_sha256=row['token_sha256'],binding=json.loads(row['binding_json']))
+        from .check_approvals import CheckApprovals
+        return CheckApprovals.lookup(db,plan_id,revision,raw)
 
     def accept(self, request: dict) -> dict:
         existing = self.catalog.find_operation(request)
@@ -131,8 +125,13 @@ class IntegrationOperations:
                     context['receipt_id'] = receipt['id']
                     self._insert(db,operation,request,context)
                 else:
-                    if plan is None or selected['binding'] != binding:
+                    checked = isinstance(selected['binding'].get('checks'),dict)
+                    compared = {**selected['binding'], 'checks':'not_run_by_solace'} if checked else selected['binding']
+                    if plan is None or compared != binding:
                         stale('The supplied approval binding differs from the exact reviewed candidate.')
+                    if checked:
+                        from .check_approvals import CheckApprovals
+                        CheckApprovals.verify(db,selected,plan)
                     header,_ = self.claims._rows(db,plan)
                     if header['state']!='approved': stale('The current plan is no longer approved.')
                     self._insert(db,operation,request,context)

@@ -169,7 +169,13 @@ class IntegrationClaims:
         with self.catalog.connect() as db:
             cached = self.tasks.lookup_request(request,db)
             if cached is not None: return cached
-        if p.get('accept_unchecked') is not True:
+        checked = p.get('check_run') is not None
+        if checked:
+            from .schema import require_checks
+            require_checks(self.catalog)
+        if checked and p.get('accept_unchecked') is True:
+            stale('Choose exactly one approval mode.')
+        if not checked and p.get('accept_unchecked') is not True:
             raise CoreError('INTEGRATION_UNCHECKED','Solace has not run checks for this candidate.',
                             'Explicitly accept unchecked integration after reviewing this exact revision.')
         plan = self.plans.load(p['plan'],p['revision'])
@@ -186,6 +192,9 @@ class IntegrationClaims:
                 row,expected,_ = self._check_metadata(plan)
                 if row['review_token'] != binding['review_token'] or expected != binding['expected']:
                     stale('The reviewed binding changed during approval.')
+                if checked:
+                    from .check_approvals import CheckApprovals
+                    return CheckApprovals(self.service,self.catalog).approve(request,plan,binding)
                 with self.catalog.connect(write=True) as db:
                     self._rows(db,plan)
                     token = secrets.token_hex(32); now = self.catalog._now()
