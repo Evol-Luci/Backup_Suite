@@ -193,6 +193,60 @@ class RunTests(IntegrationCase):
         self.assertEqual(result['steps'][0]['state'],'launch_error')
         self.assertEqual(self.catalog.get_operation(accepted['operation_id'])['state'],'failed')
 
+    def test_incomplete_output_capture_error_retains_stage(self):
+        from dataclasses import replace
+        self.prepared_run(['print("ok")'])
+        original = CheckExecutor.execute
+        def incomplete(executor, *args):
+            return replace(original(executor, *args), output_complete=False)
+        with patch.object(CheckExecutor, 'execute', incomplete), patch.object(self.runs, '_capture', side_effect=OSError('capture failed')):
+            result = self.finish(self.runs.start(self.req))
+        self.assertEqual(result['cleanup_state'], 'unsafe')
+        self.assertTrue(Path(result['staging_path']).exists())
+
+    def test_cancel_during_final_scan_returns_and_prevents_pass(self):
+        self.prepared_run(['print("ok")'])
+        entered, release = threading.Event(), threading.Event()
+        original = self.runs.binding
+        calls = []
+        def binding(*args):
+            calls.append(1)
+            if len(calls) == 3:
+                entered.set()
+                release.wait(10)
+            return original(*args)
+        with patch.object(self.runs, 'binding', binding):
+            accepted = self.runs.start(self.req)
+            self.assertTrue(entered.wait(10))
+            response = []
+            thread = threading.Thread(target=lambda: response.append(self.runs.cancel(
+                self.request('integration.check.cancel', run=accepted['run_id']))))
+            thread.start()
+            thread.join(2)
+            try:
+                self.assertFalse(thread.is_alive(), 'cancel waited for the final scan')
+            finally:
+                release.set()
+                thread.join(10)
+            self.assertEqual(response[0]['state'], 'cancelling')
+            self.assertEqual(self.finish(accepted)['state'], 'cancelled')
+
+    def test_recovery_retains_running_stage_without_recorded_pid(self):
+        self.prepared_run()
+        with patch.object(self.service.coordinator(self.project), 'submit'):
+            accepted = self.runs.start(self.req)
+        stage = self.runs.staging.stage(accepted['run_id'], self.plan)
+        with self.catalog.connect(write=True) as db:
+            db.execute("UPDATE check_runs SET state='running' WHERE id=?", (accepted['run_id'],))
+        with patch('solace_core.check_runs.os.killpg') as kill:
+            self.catalog.recover_interrupted()
+        kill.assert_not_called()
+        result = self.runs.show(accepted['run_id'])
+        self.assertEqual(result['cleanup_state'], 'unsafe')
+        self.assertEqual(result['recovery']['cleanup'], 'retained')
+        self.assertEqual(result['recovery']['survivor'], 'identity_uncertain')
+        self.assertTrue(stage.root.exists())
+
     def test_recovery_checks_identity_and_preserves_uncertain_stage(self):
         self.prepared_run()
         with patch.object(self.service.coordinator(self.project),'submit'):

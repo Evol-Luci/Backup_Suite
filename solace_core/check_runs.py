@@ -148,16 +148,15 @@ class CheckRuns:
 
     def cancel(self, request):
         require_checks(self.catalog)
-        with self.coordinator.lock:
+        with self.service._guard:
             with self.catalog.connect(write=True) as db:
                 cached = self._lookup(request,db)
                 if cached is not None: return cached
                 row = self._row(request['params']['run'],db)
                 result = dict(run_id=row['id'], state='cancelling' if row['state'] in _ACTIVE else row['state'])
                 if row['state'] in _ACTIVE:
-                    with self.service._guard:
-                        event = self.service._check_cancellations.get((self.catalog.registration['id'], row['id']))
-                        if event is not None: event.set()
+                    event = self.service._check_cancellations.get((self.catalog.registration['id'], row['id']))
+                    if event is not None: event.set()
                 self.tasks.save_request(db, request, result)
             self.catalog.notify()
             return result
@@ -218,12 +217,16 @@ class CheckRuns:
                         db.execute('UPDATE check_runs SET result_json=?,updated_at=? WHERE id=? AND state=\'running\'',
                                    (canonical(retained),self.catalog._now(),run_id))
                 result = executor.execute(step,stage,cancel,on_start)
+                if not result.output_complete:
+                    retained['cleanup_blocked'] = 'output_incomplete'
+                    with self.catalog.connect(write=True) as db:
+                        db.execute("UPDATE check_runs SET result_json=?,cleanup_state='unsafe',updated_at=? WHERE id=?",
+                                   (canonical(retained),self.catalog._now(),run_id))
                 paths = self._capture(stage,ordinal,result)
                 details = asdict(result)
                 for field in ('stdout','stderr'): details.pop(field)
                 # Exceptions in on_start leave the durable process marker intact.
                 retained['process'] = None
-                if not result.output_complete: retained['cleanup_blocked'] = 'output_incomplete'
                 with self.catalog.connect(write=True) as db:
                     db.execute('INSERT INTO check_steps(run_id,ordinal,state,argv_json,timeout_seconds,output_cap,started_at,finished_at,exit_code,signal,stdout_sha256,stderr_sha256,stdout_bytes,stderr_bytes,stdout_path,stderr_path,details_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                         (run_id,ordinal,result.status,canonical(step['argv']),step['timeout_seconds'],step['output_limit_bytes'],
@@ -286,12 +289,22 @@ class CheckRuns:
             return False
 
     def _finish(self, run_id, operation_id, state, error):
+        # Serialize cancellation with the terminal transaction, independently of scans.
+        with self.service._guard:
+            event = self.service._check_cancellations.get((self.catalog.registration['id'], run_id))
+            if state == 'passed' and event is not None and event.is_set():
+                state = 'cancelled'
+            self._finish_locked(run_id, operation_id, state, error)
+
+    def _finish_locked(self, run_id, operation_id, state, error):
         with self.catalog.connect(write=True) as db:
             row = self._row(run_id,db)
             if row['state'] not in _ACTIVE: return
             retained = json.loads(row['result_json'])
             if state == 'passed' and not self._metadata_matches(db, row, retained['binding']):
                 state = 'stale'
+            if retained.get('process'):
+                retained['cleanup_blocked'] = retained.get('cleanup_blocked', 'process_uncertain')
             retained['error'] = error
             db.execute('UPDATE check_runs SET state=?,result_json=?,cleanup_state=?,updated_at=? WHERE id=?',
                        (state,canonical(retained),'unsafe' if retained.get('cleanup_blocked') else row['cleanup_state'],self.catalog._now(),run_id))
@@ -310,7 +323,7 @@ class CheckRuns:
         for row in cursor.execute("SELECT * FROM check_runs WHERE state IN ('reserved','running')").fetchall():
             result = json.loads(row['result_json'] or '{}')
             process = result.get('process')
-            survivor = 'none_recorded'
+            survivor = 'identity_uncertain' if row['state'] == 'running' else 'none_recorded'
             if process:
                 survivor = 'identity_uncertain'
                 pid = process.get('pid'); identity = process.get('start_time')
@@ -329,7 +342,7 @@ class CheckRuns:
             operation = result.get('operation_id')
             db.execute("UPDATE check_steps SET state='interrupted' WHERE run_id=? AND state IN ('pending','running')",(row['id'],))
             db.execute("UPDATE check_runs SET state='interrupted',result_json=?,cleanup_state=?,updated_at=? WHERE id=?",
-                       (canonical(result),'unsafe' if process else 'pending',now,row['id']))
+                       (canonical(result),'unsafe' if process or row['state'] == 'running' else 'pending',now,row['id']))
             if operation:
                 op = cursor.execute('SELECT * FROM operations WHERE id=?',(operation,)).fetchone()
                 if op and op['state'] in ('queued','running'):
