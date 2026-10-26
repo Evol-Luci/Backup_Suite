@@ -57,7 +57,11 @@ class CheckRuns:
             task = self.tasks.row(db, plan.task_id)
             row = db.execute('SELECT profile_json FROM integration_revisions WHERE plan_id=? AND revision=?',
                              (plan.id, plan.revision)).fetchone()
-        if not selected or selected['profile_id'] != profile['profile_id']:
+        if not selected:
+            raise CoreError('CHECK_PROFILE_MISSING', 'The task has no selected check profile.',
+                'Resume the task, use solace task check-profile select PROJECT TASK PROFILE to select an approved profile, '
+                'then save a new ready result and prepare a new integration plan.')
+        if selected['profile_id'] != profile['profile_id']:
             raise _error('The task has not selected this approved check profile.')
         if (active['revision'], active['digest']) != (profile['revision'], profile['digest']):
             raise _error('The active check profile revision changed.')

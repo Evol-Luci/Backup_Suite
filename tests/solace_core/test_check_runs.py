@@ -46,6 +46,19 @@ class RunTests(IntegrationCase):
             time.sleep(.01)
         return self.runs.show(accepted['run_id'])
 
+    def test_missing_task_profile_returns_setup_error_without_reserving_run(self):
+        from solace_core.errors import CoreError
+        self.prepared_run()
+        task, result, _ = self.ready_task({'candidate': b'M'})
+        plan = self.prepare_direct(task, result)
+        request = self.request('integration.check.run', plan=plan.id,
+            revision=plan.revision, profile=self.profile)
+        with self.assertRaises(CoreError) as caught:
+            self.runs.start(request)
+        self.assertEqual(caught.exception.code, 'CHECK_PROFILE_MISSING')
+        self.assertIn('solace task check-profile select', caught.exception.next_step)
+        self.assertEqual(self.runs.list(plan.id)['runs'], [])
+
     def test_pass_and_fail_are_durable_and_replayable(self):
         workspace = self.prepared_run()
         accepted = self.runs.start(self.req)
