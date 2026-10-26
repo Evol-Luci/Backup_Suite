@@ -42,6 +42,8 @@ class CheckApprovalTests(IntegrationCase):
         self.prepared_run()
         run = self.finish(self.runs.start(self.req))
         approval = self.approval(run['id'])
+        review = IntegrationReview(self.service,self.catalog)
+        self.assertEqual(review.show(self.plan.id)['checks']['run_id'],run['id'])
         operations = IntegrationOperations(self.service,self.catalog)
         request = self.request('integration.apply',plan=self.plan.id,revision=self.plan.revision,
                                approval=approval['approval'],writers_paused=True)
@@ -51,6 +53,7 @@ class CheckApprovalTests(IntegrationCase):
         receipt = IntegrationCommit(self.service,self.catalog).receipt(result['result']['receipt_id'])
         self.assertEqual(receipt['checks']['candidate_digest'],self.plan.candidate.manifest_sha256)
         self.assertEqual(len(receipt['checks']['steps']),2)
+        self.assertEqual(review.show(self.plan.id)['checks'],receipt['checks'])
 
     def test_profile_edit_revokes_pending_approval(self):
         from solace_core.check_profiles import CheckProfiles
@@ -85,6 +88,7 @@ class CheckApprovalTests(IntegrationCase):
             db.execute('UPDATE integration_journals SET intent_json=? WHERE operation_id=?',(json.dumps(intent),operation))
         publisher = IntegrationPublisher(self.service,self.catalog)
         journal = publisher.stage(operation,self.plan)
+        self.assertEqual(IntegrationReview(self.service,self.catalog).show(self.plan.id)['checks']['run_id'],run['id'])
         publisher.publish(journal)
         publisher.verify_final(journal)
         with self.catalog.connect(write=True) as db:
@@ -101,6 +105,7 @@ class CheckApprovalTests(IntegrationCase):
                                token=review['review_token'],accept_unchecked=True)
         result = claims.approve(request)
         self.assertEqual(result['checks'],'not_run_by_solace')
+        self.assertEqual(IntegrationReview(self.service,self.catalog).show(self.plan.id)['checks'],'not_run_by_solace')
         self.assertEqual(claims.approve(request),result)
         with self.catalog.connect() as db:
             self.assertEqual(db.execute('SELECT accepted_unchecked FROM integration_approvals').fetchone()[0],1)
