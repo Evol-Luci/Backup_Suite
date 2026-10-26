@@ -105,27 +105,103 @@ class CheckAcceptanceTests(IntegrationCase):
         self.assertFalse((self.root / 'artifact').exists())
 
     def test_restarted_core_preserves_interrupted_evidence(self):
-        from unittest.mock import patch
-        from solace_core.service import CoreService
-        from solace_core.server import SocketServer, bind_private_socket
-        import threading
-        profile = self.profile('print("never started")')
+        import os
+        import signal
+        import subprocess
+        import time
+        from solace_core.check_process import process_start_time
+
+        definition = {'version': 1, 'name': 'crash-evidence', 'environment': {}, 'steps': [
+            {'name': 'evidence', 'argv': [sys.executable, '-c', 'print("retained evidence")'],
+             'timeout_seconds': 5, 'output_limit_bytes': 1024},
+            {'name': 'running', 'argv': [sys.executable, '-c', 'import time; time.sleep(60)'],
+             'timeout_seconds': 120, 'output_limit_bytes': 1024}]}
+        definition_path = self.base / 'crash-profile.json'
+        definition_path.write_text(json.dumps(definition))
+        preview = self.result('project', 'check-profile', 'preview', self.project, 'create', '--definition', str(definition_path))
+        profile = self.result('project', 'check-profile', 'apply', self.project, 'create', '--definition', str(definition_path),
+                              '--plan-token', preview['plan_token'], '--confirmed')['profile_id']
         task, saved, _ = self.selected_task(profile)
         plan = self.plan(task, saved)
-        with patch.object(self.service.coordinator(self.project), 'submit'):
-            accepted = self.result('integration', 'check', 'run', self.project, plan['plan_id'],
-                                   '--revision', str(plan['revision']), '--profile', profile)
         self.stop_server()
         self.service.close()
         self.path.unlink(missing_ok=True)
-        self.service = CoreService(self.registry, config=self.config)
-        self.addCleanup(self.service.close)
-        self.listener = bind_private_socket(self.path, self.base)
-        self.server = SocketServer(self.listener, self.service)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+
+        # A separate core process owns the actual socket and worker. Killing it
+        # avoids the cancellation and executor join performed by clean close().
+        script = """
+import sys
+from pathlib import Path
+from solace_core.registry import Registry
+from solace_core.storage import StoragePolicy
+from solace_core.service import CoreService
+from solace_core.workspace_paths import CoreConfig
+from solace_core.server import SocketServer, bind_private_socket
+base = Path(sys.argv[1])
+policy = StoragePolicy(mountinfo='1 0 0:1 / / rw - ext4 x rw\\n', sync_roots=[])
+registry = Registry(base / 'data/registry.sqlite3', policy)
+service = CoreService(registry, config=CoreConfig(sync_roots=(), workspace_root=base / 'workspaces'))
+listener = bind_private_socket(base / 'core.sock', base)
+SocketServer(listener, service).serve_forever()
+"""
+        processes = []
+        def start_core():
+            self.path.unlink(missing_ok=True)
+            proc = subprocess.Popen([sys.executable, '-c', script, str(self.base)],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            processes.append(proc)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    self.fail(f'core exited: {proc.stderr.read().decode()}')
+                if self.path.exists():
+                    return proc
+                time.sleep(.02)
+            self.fail('core socket did not appear')
+        def stop_processes():
+            for proc in processes:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=10)
+                proc.stderr.close()
+        self.addCleanup(stop_processes)
+        core = start_core()
+        accepted = self.result('integration', 'check', 'run', self.project, plan['plan_id'],
+                               '--revision', str(plan['revision']), '--profile', profile)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            run = self.result('integration', 'check', 'show', self.project, accepted['run_id'])
+            process = run.get('process') or {}
+            if process.get('ordinal') == 1 and len(run['steps']) == 1:
+                break
+            time.sleep(.03)
+        else:
+            self.fail(f'check did not launch second step: {run}')
+        self.assertEqual(run['state'], 'running')
+        self.assertEqual(process_start_time(process['pid']), process['start_time'])
+        def reap_survivor():
+            if process_start_time(process['pid']) == process['start_time']:
+                try:
+                    if os.getpgid(process['pid']) == process['pid']:
+                        os.killpg(process['pid'], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        self.addCleanup(reap_survivor)
+        evidence = Path(run['steps'][0]['stdout_path'])
+        self.assertEqual(evidence.read_bytes(), b'retained evidence\n')
+        stage = Path(run['staging_path'])
+        self.assertTrue(stage.is_dir())
+        self.assertEqual((stage / 'candidate' / 'candidate').read_text(), 'exact candidate')
+        os.kill(core.pid, signal.SIGKILL)
+        self.assertEqual(core.wait(timeout=10), -signal.SIGKILL)
+        start_core()
         run = self.result('integration', 'check', 'show', self.project, accepted['run_id'])
         self.assertEqual(run['state'], 'interrupted')
+        self.assertEqual(run['recovery']['survivor'], 'signalled_retained')
+        self.assertEqual(run['recovery']['cleanup'], 'retained')
+        self.assertEqual(run['steps'][0]['state'], 'passed')
+        self.assertEqual(evidence.read_bytes(), b'retained evidence\n')
+        self.assertTrue(stage.is_dir())
         self.assertEqual(self.result('operation', 'show', self.project, accepted['operation_id'])['state'], 'interrupted')
         self.assertFalse(self.failed('integration', 'approve', self.project, plan['plan_id'], '--revision',
             str(plan['revision']), '--token', plan['review_token'], '--check-run', run['id'])['ok'])
