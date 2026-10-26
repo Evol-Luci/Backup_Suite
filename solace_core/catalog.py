@@ -261,7 +261,12 @@ class ProjectCatalog:
     def recover_interrupted(self):
         with self.connect(write=True, metadata=True) as db:
             ids = [r[0] for r in db.execute("SELECT id FROM operations WHERE state IN ('queued','running')")]
+            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4:
+                from .check_runs import CheckRuns
+                CheckRuns.recover(db)
             for operation in ids:
+                if db.execute('SELECT state FROM operations WHERE id=?',(operation,)).fetchone()[0] == 'interrupted':
+                    continue
                 error = CoreError('OPERATION_INTERRUPTED', 'The core stopped before a committed result.', 'Inspect the operation and any restore destination before starting new work.').as_dict()
                 self._transition(db, operation, 'interrupted', error=error)
                 if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3, 4):

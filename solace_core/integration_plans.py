@@ -150,7 +150,9 @@ class IntegrationPlans:
                 if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4:
                     for row in db.execute('SELECT staging_path FROM check_runs'):
                         stage = Path(row[0])
-                        roots.update((stage, stage.parent.parent/'check-evidence'/stage.name))
+                        roots.update((stage, stage.parent.parent/'check-evidence'/stage.name,
+                                      Path(record['store'])/'check-runs'/stage.name,
+                                      Path(record['store'])/'check-evidence'/stage.name))
                 if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
                     for table, column in (('integration_journals', 'journal_path'), ('integration_exports', 'path'), ('integration_claims', 'path')):
                         where = " WHERE kind!='target'" if table == 'integration_claims' else ''

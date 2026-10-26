@@ -29,6 +29,7 @@ class CoreService:
         self._guard = threading.RLock()
         self._catalogs, self._coordinators = {}, {}
         self._pending_recovery = set()
+        self._check_cancellations = {}
         self._lock_fd = os.open(registry.path.parent / 'core.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -57,6 +58,7 @@ class CoreService:
         with self._guard:
             if self._closed: return
             self._closed = True
+            for cancellation in self._check_cancellations.values(): cancellation.set()
         if self.maintenance is not None: self.maintenance.close()
         self.executor.shutdown(wait=True)
         os.close(self._lock_fd)
@@ -200,6 +202,17 @@ class CoreService:
         if method == 'project.list':
             return {'projects': self.registry.list()}
         project = p['project']
+        if method.startswith('integration.check.'):
+            from .check_runs import CheckRuns
+            catalog, registered = self._receipt_catalog(project,metadata=True)
+            runs = CheckRuns(self,catalog)
+            if method == 'integration.check.show': return runs.show(p['run'])
+            if method == 'integration.check.list': return runs.list(p['plan'],p.get('after',0),p.get('limit',128))
+            if method == 'integration.check.cancel': return runs.cancel(request)
+            if method == 'integration.check.run':
+                if not registered:
+                    raise CoreError('PROJECT_NOT_FOUND','New checks require a registered project.','Register the project before running checks.')
+                return runs.start(request)
         if method.startswith('integration.'):
             from .integration_operations import IntegrationOperations
             catalog, registered = self._receipt_catalog(project,metadata=True)

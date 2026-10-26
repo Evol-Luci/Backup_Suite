@@ -159,7 +159,8 @@ class WorkspacePaths:
                     if version == 4:
                         for r in db.execute('SELECT staging_path FROM check_runs'):
                             stage = Path(r[0])
-                            locations += [(stage,None),(stage.parent.parent/'check-evidence'/stage.name,None)]
+                            locations += [(owned,None) for owned in {stage,stage.parent.parent/'check-evidence'/stage.name,
+                                Path(record['store'])/'check-runs'/stage.name,Path(record['store'])/'check-evidence'/stage.name}]
                     if version in (3, 4):
                         for table,column in (('integration_journals','journal_path'),('integration_exports','path')):
                             locations += [(Path(r[0]),None) for r in db.execute(f'SELECT {column} FROM {table}')]
@@ -183,7 +184,13 @@ class WorkspacePaths:
                 with readonly_database(catalog.database) as db:
                     if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4:
                         for path,run,state in db.execute('SELECT staging_path,id,state FROM check_runs'):
-                            for owned in (Path(path), Path(path).parent.parent/'check-evidence'/run):
+                            owned_paths = {Path(path), Path(path).parent.parent/'check-evidence'/run}
+                            # Do not reject the explicit candidate placement against
+                            # its own new alias; guard both spellings after handoff.
+                            if not (candidate is not None and record['id']==project_id):
+                                owned_paths.update((Path(record['store'])/'check-runs'/run,
+                                                    Path(record['store'])/'check-evidence'/run))
+                            for owned in owned_paths:
                                 claims.append(dict(path=str(owned),operation_id='check:'+run,kind='check',phase=state))
                     if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
                         for path,operation,kind,phase in db.execute(
