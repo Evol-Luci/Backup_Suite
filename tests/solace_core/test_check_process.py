@@ -41,8 +41,16 @@ class ProcessTests(unittest.TestCase):
         pid = int(result.stdout.strip())
         path = Path('/proc')/str(pid)/'stat'
         deadline=time.monotonic()+2
-        while path.exists() and path.read_text().split(') ',1)[1][0] != 'Z' and time.monotonic()<deadline: time.sleep(.01)
-        self.assertTrue(not path.exists() or path.read_text().split(') ',1)[1][0]=='Z')
+        while True:
+            try:
+                state = path.read_text().split(') ', 1)[1][0]
+            except FileNotFoundError:
+                return  # The process was reaped while its proc entry was inspected.
+            if state == 'Z':
+                return
+            if time.monotonic() >= deadline:
+                self.fail(f'child {pid} is still alive (state {state})')
+            time.sleep(.01)
 
     def test_timeout_kills_process_group(self):
         identities=[]
