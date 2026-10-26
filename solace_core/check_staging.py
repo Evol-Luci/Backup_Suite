@@ -140,26 +140,38 @@ class CheckStaging:
             raise _unsafe() from error
 
     @staticmethod
-    def _remove_contents(directory, device):
-        """Traverse only held directories; refuse changed names and mounts."""
-        for name in os.listdir(directory):
-            before = os.stat(name, dir_fd=directory, follow_symlinks=False)
-            if stat.S_ISDIR(before.st_mode):
+    def _remove_contents(directory, device, retained=None):
+        """Bind retained children before deletion; never adopt a replaced name."""
+        held = {}
+        try:
+            for name, identity in (retained or {}).items():
                 child = os.open(name, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW, dir_fd=directory)
-                try:
-                    opened = os.fstat(child)
-                    if opened.st_dev != device or not os.path.samestat(before, opened): raise _unsafe()
-                    CheckStaging._remove_contents(child, device)
-                    if not os.path.samestat(opened, os.stat(name, dir_fd=directory, follow_symlinks=False)):
+                held[name] = child
+                opened = os.fstat(child)
+                if (opened.st_dev, opened.st_ino) != (identity['device'], identity['inode']): raise _unsafe()
+            for name in os.listdir(directory):
+                before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if name in held and not os.path.samestat(before, os.fstat(held[name])): raise _unsafe()
+                if stat.S_ISDIR(before.st_mode):
+                    child = held.get(name)
+                    if child is None:
+                        child = os.open(name, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW, dir_fd=directory)
+                    try:
+                        opened = os.fstat(child)
+                        if opened.st_dev != device or not os.path.samestat(before, opened): raise _unsafe()
+                        CheckStaging._remove_contents(child, device)
+                        if not os.path.samestat(opened, os.stat(name, dir_fd=directory, follow_symlinks=False)):
+                            raise _unsafe()
+                        os.rmdir(name, dir_fd=directory)
+                    finally:
+                        if name not in held: os.close(child)
+                else:
+                    if not os.path.samestat(before, os.stat(name, dir_fd=directory, follow_symlinks=False)):
                         raise _unsafe()
-                    os.rmdir(name, dir_fd=directory)
-                finally:
-                    os.close(child)
-            else:
-                if not os.path.samestat(before, os.stat(name, dir_fd=directory, follow_symlinks=False)):
-                    raise _unsafe()
-                os.unlink(name, dir_fd=directory)
-        os.fsync(directory)
+                    os.unlink(name, dir_fd=directory)
+            os.fsync(directory)
+        finally:
+            for child in held.values(): os.close(child)
 
     def cleanup(self, run_id):
         row, container = self._row(run_id)
@@ -178,7 +190,7 @@ class CheckStaging:
                 try:
                     opened = os.fstat(owned)
                     if (opened.st_dev, opened.st_ino) != (identity['device'], identity['inode']): raise _unsafe()
-                    self._remove_contents(owned, opened.st_dev)
+                    self._remove_contents(owned, opened.st_dev, identity['children'])
                     if not os.path.samestat(opened, os.stat(container.name, dir_fd=parent, follow_symlinks=False)):
                         raise _unsafe()
                     os.rmdir(container.name, dir_fd=parent)

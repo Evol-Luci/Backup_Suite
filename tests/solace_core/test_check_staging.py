@@ -105,15 +105,57 @@ class StagingTests(IntegrationCase):
         container=staged.root.parent; moved=container.with_name('moved-after-open')
         original=CheckStaging._remove_contents
         swapped=False
-        def substitute(fd, device):
+        def substitute(fd, device, *args):
             nonlocal swapped
             if not swapped:
                 swapped=True; container.rename(moved); container.mkdir()
                 (container/'keep').write_text('replacement')
-            return original(fd,device)
+            return original(fd,device,*args)
         with self.catalog.connect(write=True) as db: db.execute("UPDATE check_runs SET state='interrupted' WHERE id=?",(self.run,))
         with patch.object(CheckStaging,'_remove_contents',side_effect=substitute):
             result=self.staging.cleanup(self.run)
         self.assertEqual(result['cleanup_state'],'unsafe')
         self.assertEqual((container/'keep').read_text(),'replacement')
         self.assertTrue(moved.is_dir())
+
+    def _assert_retained_child_substitution_preserved(self, name, after_open=False):
+        plan,_=self.prepared(); staged=self.staging.stage(self.run,plan)
+        path=staged.root.parent/name
+        moved=path.with_name(name+'-original')
+        original=CheckStaging._remove_contents
+        listdir=os.listdir
+        swapped=False
+        def swap():
+            nonlocal swapped
+            if not swapped:
+                swapped=True
+                path.rename(moved)
+                path.mkdir(); (path/'keep').write_text('replacement')
+        def substitute(fd, device, *args):
+            swap()
+            return original(fd,device,*args)
+        def substitute_after_open(fd):
+            swap()
+            return listdir(fd)
+        with self.catalog.connect(write=True) as db: db.execute("UPDATE check_runs SET state='interrupted' WHERE id=?",(self.run,))
+        hook = patch('solace_core.check_staging.os.listdir',side_effect=substitute_after_open) if after_open else patch.object(CheckStaging,'_remove_contents',side_effect=substitute)
+        with hook:
+            result=self.staging.cleanup(self.run)
+        self.assertTrue(swapped)
+        self.assertEqual(result['cleanup_state'],'unsafe')
+        self.assertEqual((path/'keep').read_text(),'replacement')
+        self.assertTrue(moved.is_dir())
+        if name == 'candidate':
+            self.assertEqual((moved/'script').read_bytes(),b'candidate')
+
+    def test_cleanup_substituted_candidate_is_never_adopted(self):
+        self._assert_retained_child_substitution_preserved('candidate')
+
+    def test_cleanup_substituted_home_is_never_adopted(self):
+        self._assert_retained_child_substitution_preserved('home')
+
+    def test_cleanup_substituted_tmp_is_never_adopted(self):
+        self._assert_retained_child_substitution_preserved('tmp')
+
+    def test_cleanup_child_substitution_after_descriptor_open_is_preserved(self):
+        self._assert_retained_child_substitution_preserved('candidate',after_open=True)
