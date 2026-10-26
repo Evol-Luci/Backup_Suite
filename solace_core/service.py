@@ -191,7 +191,7 @@ class CoreService:
         method, p, actor, reqid = request['method'], request['params'], request['actor'], request['id']
         if method == 'core.status':
             return dict(pid=os.getpid(), protocol_version=1, projects=self.registry.list(), recovery=self.recovery,
-                        capabilities=['tasks.v1','workspaces.v1','project-upgrade.v1','prompt-retention.v1','integrations.v1'],
+                        capabilities=['tasks.v1','workspaces.v1','project-upgrade.v1','prompt-retention.v1','integrations.v1','checks.v1'],
                         core_schema_supported=[1,2,3,4],core_schema_created=4,
                         prompt_maintenance=dict(self.maintenance.failures) if self.maintenance else {})
         if method == 'doctor':
@@ -202,9 +202,23 @@ class CoreService:
         if method == 'project.list':
             return {'projects': self.registry.list()}
         project = p['project']
+        if method.startswith('project.check-profile.') or method == 'task.check-profile.select':
+            from .schema import require_checks
+            from .check_profiles import CheckProfiles
+            from .check_selection import CheckSelection
+            catalog = self.catalog(project)
+            require_checks(catalog)
+            profiles = CheckProfiles(catalog)
+            if method == 'project.check-profile.list': return profiles.list(p.get('after',0),p.get('limit',128))
+            if method == 'project.check-profile.show': return profiles.show(p['profile_id'])
+            if method == 'project.check-profile.preview': return profiles.preview(request)
+            if method == 'project.check-profile.apply': return profiles.apply(request)
+            return CheckSelection(catalog).select(request)
         if method.startswith('integration.check.'):
             from .check_runs import CheckRuns
             catalog, registered = self._receipt_catalog(project,metadata=True)
+            from .schema import require_checks
+            require_checks(catalog)
             runs = CheckRuns(self,catalog)
             if method == 'integration.check.show': return runs.show(p['run'])
             if method == 'integration.check.list': return runs.list(p['plan'],p.get('after',0),p.get('limit',128))

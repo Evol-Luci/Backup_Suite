@@ -52,6 +52,8 @@ def _parser():
     add_parsers(commands,actions)
     from .integration_cli import add_parsers as add_integration_parsers
     add_integration_parsers(commands)
+    from .check_cli import add_parsers as add_check_parsers
+    add_check_parsers(commands, actions)
     checkpoints=commands.add_parser('checkpoint'); actions=checkpoints.add_subparsers(dest='action',required=True)
     for action in ('create','list','verify','restore','usage'):
         p=actions.add_parser(action);p.add_argument('project')
@@ -125,10 +127,14 @@ def main(argv=None):
                 print(f'Relink source root to {root}? [y/N] ',end='',file=sys.stderr,flush=True)
                 if input().strip().lower()=='y':confirmed=root
             params.update(root=root,store=str(Path(args.store).resolve()),confirmed_root=confirmed or '')
-        if args.command in ('task','workspace') or (args.command=='project' and args.action in ('upgrade','prompt-policy')):
+        is_check = (args.command=='project' and args.action=='check-profile') or (args.command=='task' and args.action=='check-profile') or (args.command=='integration' and args.action=='check')
+        if is_check:
+            from .check_cli import prepare
+            method,params=prepare(client,args,params['project'],globals_.request_id)
+        if not is_check and (args.command in ('task','workspace') or (args.command=='project' and args.action in ('upgrade','prompt-policy'))):
             from .task_cli import prepare
             method,params=prepare(client,args,params['project'],globals_.request_id)
-        if args.command=='integration':
+        if args.command=='integration' and not is_check:
             from .integration_cli import prepare
             method,params=prepare(client,args,params['project'],globals_.request_id)
         if args.command=='checkpoint':
@@ -150,12 +156,16 @@ def main(argv=None):
             if text is None:
                 raise CoreError('PROMPT_UNAVAILABLE','Prompt text is '+result['result']['status']+'.','Inspect prompt metadata with --json.')
             sys.stdout.buffer.write(text.encode('utf-8'));sys.stdout.buffer.flush()
+        elif is_check and not as_json:
+            from .check_cli import emit as emit_check
+            emit_check(result, method, params)
         elif args.command=='integration' and not as_json:
             from .integration_cli import emit as emit_integration
             emit_integration(result,method,params,socket=globals_.socket)
         else: emit(result,as_json)
         if not result['ok']:return exit_code(result['error']['code'])
         if getattr(args,'wait',False) and result['result'].get('state') in ('failed','interrupted'):return 1
+        if is_check and getattr(args,'wait',False) and result['result'].get('result',{}).get('state') in ('failed','stale','timed_out','cancelled','interrupted'):return 1
         if getattr(args,'watch',False):
             if args.command=='operation' and result['result']['state'] not in ('queued','running'):
                 return 0 if result['result']['state']=='succeeded' else 1

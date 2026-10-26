@@ -29,6 +29,8 @@ def add_parsers(commands,project_actions):
         if action=='start': p.add_argument('--from',dest='from_checkpoint');p.add_argument('--parent-revision',type=int)
         if action in ('start','ready'): p.add_argument('--wait',action='store_true')
         if action=='show': p.add_argument('--watch',action='store_true');p.add_argument('--after',type=int,default=0)
+    from .check_cli import add_task_parser
+    add_task_parser(task)
     prompt=task.add_parser('prompt').add_subparsers(dest='prompt_action',required=True)
     for action in ('show','delete'):
         p=prompt.add_parser(action);p.add_argument('project');p.add_argument('task')

@@ -100,7 +100,19 @@ class IntegrationCLITests(unittest.TestCase):
             emit(dict(ok=True,result=dict(receipt_id=ID,operation_id='c'*32,next_after=1)),
                  'integration.receipt',dict(project=ID,receipt=ID,limit=1))
         self.assertIn('--after 1 --limit 1 --json',output.getvalue())
+        self.assertIn('Check evidence is unavailable',output.getvalue())
+        self.assertNotIn('Solace did not run checks',output.getvalue())
+        output=StringIO()
+        with redirect_stdout(output):
+            emit(dict(ok=True,result=dict(receipt_id=ID,checks='not_run_by_solace')),
+                 'integration.receipt',dict(project=ID,receipt=ID))
         self.assertIn('Solace did not run checks',output.getvalue())
+        output=StringIO()
+        with redirect_stdout(output):
+            emit(dict(ok=True,result=dict(receipt_id=ID,checks=dict(status='passed'))),
+                 'integration.receipt',dict(project=ID,receipt=ID))
+        self.assertIn('Checks passed',output.getvalue())
+        self.assertNotIn('Solace did not run checks',output.getvalue())
         output=StringIO()
         with redirect_stdout(output):
             emit(dict(ok=True,result=dict(id='c'*32,state='interrupted',error=dict(code='INTEGRATION_RECOVERY_REQUIRED',message='Interrupted publication.',next_step='Inspect retained recovery.'))),
