@@ -117,9 +117,9 @@ def emit(value, method, params, *, socket=None) -> None:
         print(status_message(checks['status']), flush=True)
     elif checks == 'not_run_by_solace':
         print('Unchecked: Solace did not run checks for this result.', flush=True)
-    elif params.get('accept_unchecked'):
+    elif value.get('ok') and params.get('accept_unchecked'):
         print('Unchecked approval: Solace did not run checks for this approval.', flush=True)
-    elif params.get('check_run'):
+    elif value.get('ok') and params.get('check_run'):
         print('Checked approval uses the selected passing run.', flush=True)
     elif value.get('ok'):
         print('Check evidence is unavailable in this response.', flush=True)
