@@ -159,6 +159,8 @@ class TaskCatalog:
             task=self.row(db,task_id)
             from .check_selection import CheckSelection
             task['check_profile']=CheckSelection.selected(db,task_id)
+            from .task_policy import TaskPolicy
+            task['integration_policy']=TaskPolicy.effective(db,task_id)
             task['profile']=json.loads(task.pop('profile_json'))
             task['prompt']=PromptStore(self.catalog,now=self.now).metadata(db,task_id)
             task.update(self.summary(db,task_id))

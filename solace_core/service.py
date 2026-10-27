@@ -202,6 +202,12 @@ class CoreService:
         if method == 'project.list':
             return {'projects': self.registry.list()}
         project = p['project']
+        if method.startswith('task.policy.'):
+            from .task_policy import TaskPolicy
+            policy = TaskPolicy(self.catalog(project))
+            if method == 'task.policy.show': return policy.show(p['task'])
+            if method == 'task.policy.preview': return policy.preview(request)
+            if method == 'task.policy.apply': return policy.apply(request)
         if method.startswith('project.policy.'):
             from .project_policy import ProjectPolicy
             policy = ProjectPolicy(self.catalog(project))

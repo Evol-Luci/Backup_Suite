@@ -21,6 +21,15 @@ class CheckSelection:
         return dict(row) if row else None
 
     @staticmethod
+    def policy_profiles(db, task_id, project):
+        """Keep task-selected checks separate from mandatory project checks."""
+        selected = CheckSelection.selected(db, task_id)
+        return dict(required_profile_id=project['required_profile_id'],
+                    required_profile_revision=project['required_profile_revision'],
+                    required_profile_digest=project['required_profile_digest'],
+                    selected_profile_id=selected['profile_id'] if selected else None)
+
+    @staticmethod
     def copy_parent(db, parent_id: str, child_id: str, now: str) -> None:
         selected = CheckSelection.selected(db, parent_id)
         if selected:
