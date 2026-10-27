@@ -1,0 +1,13 @@
+[Unit]
+Description=Solace local project core
+Requires=solace-core.socket
+After=solace-core.socket
+[Service]
+Type=simple
+ExecStart=:@PYTHON@ -B -m solace_core
+WorkingDirectory=@RUNTIME@
+UMask=0077
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX

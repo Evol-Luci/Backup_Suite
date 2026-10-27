@@ -1,0 +1,34 @@
+# Manual result integration: candidate review and acceptance
+
+This is the source-phase record written before installation. The runtime was subsequently installed and passed [disposable live acceptance on 2026-10-23](2026-10-23-result-integration-installed-acceptance.md). Statements below about installation being pending describe this earlier review phase.
+
+Updated 2026-10-23. This records the source candidate on `codex/task-integration-design`, with Task 11 committed as `0d71e15` and Task 12 documentation in the following branch commit. The Task 12 documentation/preview subset passed independent review after its one acceptance-sequence correction; `task-12-review.md` and `task-12-rereview.md` in the execution directory record the finding and its closed scoped review. The manual integration candidate is **not installed or live accepted**. The required source runtime gates pass. Independent whole-branch review found no code issue and one Important stale-documentation finding, corrected in this record and linked guidance. The source milestone is complete; installation and installed-candidate acceptance require separate authorization.
+
+## Implemented source and review
+
+Tasks 1–10 have focused commits and independent task reviews. Task 11's process-crash and narrow CLI guidance patch received an independent task-scoped specification and quality review with no actionable finding. Its 13 source/test files matched the reviewed SHA256 manifest before commit `0d71e15`. The reviewed working diff is `.superpowers/sdd/2026-10-16-result-integration/review-task11-working-57d4d54c7bd5.diff`, SHA256 `57d4d54c7bd59e4f90b0db45be5e714957ebb145d0c0de192fa5d9c2fed33317`. See `task-11-report.md` and `task-11-review.md` in that directory. The independent whole-branch review after the permitted runtime gates inspected the complete branch and working files. It found no other actionable issue beyond the stale acceptance status corrected here. The reviewer did not run tests or judge live installation behavior.
+
+The candidate implements immutable B/R/C/M planning, bounded conservative comparison, explicit resolution/export, exact-revision manual approval with `checks: not_run_by_solace`, per-file journal application, atomic history/receipt publication, explicit interrupted-operation recovery and confirmed relocation. The [operator guide](../result-integration.md) describes use and limitations; the [handoff](result-integration-handoff.md) is the recovery entry point for a new agent.
+
+## Fixed-source verification
+
+The Task 11 run used one unchanged source/test/packaging snapshot and sequential gates on 2026-10-22. Integration discovery ran 441 tests: 404 passed and 37 socket setup errors. Engine discovery passed 52/52. Complete core discovery ran 570 tests: 505 passed, 64 socket setup errors, and one systemd verification assertion after denied socket options. Legacy root discovery ran 16 tests: 9 passed and 7 Tk display setup errors. All 168 real process-crash cases passed in both integration and core, with 247 exact durable barrier records per gate. Exact commands, timing, logs and failure classification are in `task-11-evidence-20261022/` under the execution directory.
+
+In that restricted run, Unix listener binding returned EPERM before socket test bodies, `systemd-analyze --user verify` was denied SO_PASSRIGHTS/SO_PASSCRED operations, and Tk could not connect to display `:0`. Those results remain historical failed gates, not skips or passes.
+
+On 2026-10-23, the controller reran the same four commands sequentially on the unchanged source/test/packaging snapshot with `SOLACE_TEST_TMPDIR=/tmp` and approved unrestricted execution. A Unix listener bind probe succeeded first. Integration passed **441/441** in 209.273s; engine passed **52/52** in 2.048s; complete core passed **570/570** in 223.504s, including systemd verification and socket tests; legacy passed **16/16** in 0.422s, including Tk tests. Integration and core scopes overlap. Each command exited 0 and reported `OK`; `git diff --check` passed. A rehash of the 135-file gate manifest found only the previously recorded README and CHANGELOG documentation changes. No source, test or packaging file changed between these gates. This establishes the required source runtime gate, not installed-candidate acceptance, physical power-loss safety or a real unmount test.
+
+Task 11's 135-file gate manifest had SHA256 `41b1f2e2f90f32011ef1f9a4354388d3da381852b941e860600e1fbacf49ff5c`; its 13 changed source/test-file manifest had SHA256 `b16c423b6999eaf9e986d7bada9fa6628007380de955d5fc9045d9e1a0126c55`. Task 12 changes README and CHANGELOG after the gate, so those two documentation hashes intentionally differ. All source, tests and packaging files in that manifest remain identical, as recorded in `task-12-evidence-20261023/docs-verification.json`.
+
+## Installer preview and installed boundary
+
+On 2026-10-23, `python packaging/install-core.py --preview --preview-dir /tmp/solace-integration-preview-1mcmw61d` exited 0. It proposed runtime `/home/lucievol/.local/share/solace/core-runtimes/f877c3c2f0ee11a0`, with complete source payload digest `f877c3c2f0ee11a05d793fbcc149a111d8f798e3c05f5463c812209dca8c2937`. All 44 proposed Python modules from `solace_core` and `solace_engine` were checked against the installer payload calculation. The three generated files were `solace`, `solace-core.socket` and `solace-core.service` in the private preview directory. The preview reported `mode: preview`, `backup: null`, schema support 1–3 and new-store schema 3. Exact module/file hashes and installer JSON are in `task-12-evidence-20261023/` under the execution directory.
+
+The installed launcher and service unit still name runtime `59f3d8340f868d4a`. The installed launcher, socket unit and service unit hashes were identical before and after preview; no runtime link was switched. The pinned standalone rollback helper exists at `/home/lucievol/.local/share/solace/core-rollback-tools/e77eb01bf4e57e51/rollback-core.py`, and its SHA256 matches the prior durable record: `e77eb01bf4e57e51fc43fc5db40457628808e4d31a63b7ec08d0717424f5bfd7`. No rollback was run. Rollback of runtime files cannot downgrade a schema-3 project database; existing stores need separately reviewed explicit upgrade preview/apply.
+
+## Remaining acceptance sequence
+
+1. Review a fresh installer preview and the exact installation/rollback targets before a live install decision.
+2. Obtain separate concrete authorization before any live installation or per-project schema upgrade. Run installed-candidate acceptance and rollback verification only after that approved installation.
+
+The [follow-up register](2026-10-09-review-findings-and-follow-ups.md#proposed-integration-follow-ups-2026-10-16) retains the check runner, automatic policy, forward undo, GUI, rename heuristics, deeper nesting, garbage collection, replication and Git synchronization work.

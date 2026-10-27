@@ -547,6 +547,15 @@ def cmd_backup(args):
 # Main
 # ==============================================================================
 def main():
+    # Dispatch core commands before constructing legacy parsers or GUI clients.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument('--json', action='store_true')
+    common.add_argument('--socket')
+    common.add_argument('--request-id')
+    _, remaining = common.parse_known_args(sys.argv[1:])
+    if remaining and remaining[0] in {'core', 'project', 'checkpoint', 'operation', 'doctor'}:
+        from solace_core.cli import main as core_main
+        return core_main(sys.argv[1:])
     parser = argparse.ArgumentParser(
         prog="solace-backup",
         description="Solace Backup Suite — unified CLI for backups and project vault",

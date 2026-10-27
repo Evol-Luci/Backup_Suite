@@ -24,11 +24,45 @@ class ObjectStore:
     """
 
     def __init__(self, store_dir: Path):
+        self._existing_only = False
         self.store_dir = Path(store_dir).resolve()
         self.store_dir.mkdir(parents=True, exist_ok=True)
         # Persist a newly created store and every potentially new ancestor. Sync
         # even existing directories: another process may just have created them.
         self._sync_directories((self.store_dir, *self.store_dir.parents))
+
+    @classmethod
+    def open_existing(cls, store_dir: Path):
+        instance = cls.__new__(cls)
+        instance._existing_only = True
+        instance.store_dir = Path(store_dir)
+        objects = instance.store_dir / "objects"
+        if instance.store_dir.is_symlink() or objects.is_symlink():
+            raise OSError("registered object directory cannot be a symlink")
+        instance._store_identity = instance.store_dir.stat()
+        instance._objects_identity = objects.stat()
+        if not objects.is_dir():
+            raise OSError("registered object directory is unavailable")
+        return instance
+
+    def _open_shard(self, destination):
+        if not self._existing_only:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            return os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+        if not os.path.samestat(self._store_identity, self.store_dir.stat()):
+            raise OSError("registered store identity changed")
+        objects_fd = os.open(self.store_dir / "objects", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            if not os.path.samestat(self._objects_identity, os.fstat(objects_fd)):
+                raise OSError("registered objects identity changed")
+            try:
+                os.mkdir(destination.parent.name, mode=0o700, dir_fd=objects_fd)
+            except FileExistsError:
+                pass
+            return os.open(destination.parent.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                           dir_fd=objects_fd)
+        finally:
+            os.close(objects_fd)
 
     @staticmethod
     def _sync_directories(directories) -> None:
@@ -72,8 +106,7 @@ class ObjectStore:
         """Publish bytes atomically, reusing a verified existing object."""
         digest = hashlib.sha256(data).hexdigest()
         destination = self._object_path(digest)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+        directory_fd = self._open_shard(destination)
         try:
             # Writers sharing this project serialize publication within the shard.
             fcntl.flock(directory_fd, fcntl.LOCK_EX)

@@ -11,7 +11,7 @@ import sqlite3
 import stat
 import tempfile
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -22,12 +22,14 @@ from .object_store import ObjectStore
 
 
 _SCHEMA_VERSION = 1
+LATEST_PARENT = object()
 
 
 class ProjectRepository:
     """Capture project trees into one project's private checkpoint store."""
 
     def __init__(self, project_root: Path, store_dir: Path):
+        self._existing_only = False
         requested_root = Path(project_root)
         if not requested_root.is_dir() or requested_root.is_symlink():
             raise InvalidProjectPath(f"project directory is unavailable: {project_root}")
@@ -79,9 +81,49 @@ class ProjectRepository:
             """)
             connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
+    @classmethod
+    def open_existing(cls, project_root: Path, store_dir: Path):
+        """Open an existing store without initializing or replacing anything."""
+        instance = cls.__new__(cls)
+        instance._existing_only = True
+        instance.project_root = Path(project_root)
+        instance.store_dir = Path(store_dir)
+        if (not instance.project_root.is_dir() or instance.project_root.is_symlink()
+                or not instance.store_dir.is_dir() or instance.store_dir.is_symlink()):
+            raise InvalidProjectPath("project or store is unavailable")
+        instance.project_root = instance.project_root.resolve()
+        instance.store_dir = instance.store_dir.resolve()
+        instance._project_identity = instance.project_root.stat()
+        instance._store_identity = instance.store_dir.stat()
+        if os.path.samestat(instance._project_identity, instance._store_identity):
+            raise InvalidProjectPath("store directory cannot be the project root")
+        instance.database_path = instance.store_dir / "checkpoints.sqlite3"
+        if instance.database_path.is_symlink() or not instance.database_path.is_file():
+            raise InvalidProjectPath("checkpoint database is unavailable")
+        instance._database_identity = instance.database_path.stat()
+        instance.object_store = ObjectStore.open_existing(instance.store_dir)
+        with instance._connect() as connection:
+            if connection.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_VERSION:
+                raise InvalidProjectPath("unsupported checkpoint schema version")
+        return instance
+
+    def _validate_existing_identity(self):
+        if not self._existing_only:
+            return
+        try:
+            for path, identity in ((self.project_root, self._project_identity),
+                                   (self.store_dir, self._store_identity),
+                                   (self.database_path, self._database_identity)):
+                if path.is_symlink() or not os.path.samestat(identity, path.stat()):
+                    raise InvalidProjectPath("registered store identity changed")
+        except OSError as error:
+            raise InvalidProjectPath("registered store is unavailable") from error
+
     @contextmanager
     def _connect(self):
-        connection = sqlite3.connect(self.database_path, timeout=30)
+        self._validate_existing_identity()
+        target = self.database_path.as_uri() + "?mode=rw" if self._existing_only else self.database_path
+        connection = sqlite3.connect(target, timeout=30, uri=self._existing_only)
         try:
             connection.execute("PRAGMA busy_timeout = 30000")
             connection.execute("PRAGMA journal_mode = WAL")
@@ -96,13 +138,13 @@ class ProjectRepository:
         finally:
             connection.close()
 
-    def _excluded(self, path: Path, relative: str, exclusions: Sequence[str]) -> bool:
-        if path == self.store_dir or self.store_dir in path.parents:
+    def _excluded(self, path: Path, relative: str, exclusions: Sequence[str], *, include_store=False) -> bool:
+        if not include_store and (path == self.store_dir or self.store_dir in path.parents):
             return True
         return any(fnmatch.fnmatchcase(relative, pattern) or
                    fnmatch.fnmatchcase(path.name, pattern) for pattern in exclusions)
 
-    def _scan(self, exclusions: Sequence[str]) -> tuple[list[FileEntry], list[str]]:
+    def _scan(self, exclusions: Sequence[str], *, excluded=None, store_objects=True, include_store=False) -> tuple[list[FileEntry], list[str]]:
         entries: list[FileEntry] = []
         warnings: list[str] = []
 
@@ -120,18 +162,20 @@ class ProjectRepository:
             for name in names:
                 path = directory / name
                 relative = path.relative_to(self.project_root).as_posix()
-                if self._excluded(path, relative, exclusions):
+                if self._excluded(path, relative, exclusions, include_store=include_store):
                     continue
                 metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                if excluded is not None and excluded(relative, metadata):
+                    continue
                 if stat.S_ISDIR(metadata.st_mode) and os.path.samestat(metadata, self._store_identity):
                     continue
                 if stat.S_ISLNK(metadata.st_mode):
                     target = os.readlink(name, dir_fd=directory_fd).encode("utf-8", "surrogateescape")
                     require_identity(metadata, os.stat(name, dir_fd=directory_fd,
                                                        follow_symlinks=False), relative)
-                    digest = self.object_store.put_bytes(target)
+                    digest = self.object_store.put_bytes(target) if store_objects else hashlib.sha256(target).hexdigest()
                     entries.append(FileEntry(relative, "symlink", metadata.st_mode & 0o777,
-                                             len(target), digest, (digest,)))
+                                             len(target), digest, (digest,) if store_objects else ()))
                 elif stat.S_ISDIR(metadata.st_mode):
                     child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                        dir_fd=directory_fd)
@@ -154,8 +198,16 @@ class ProjectRepository:
                         # The proc fd path remains attached to this inode if another
                         # agent replaces the directory entry during chunking.
                         try:
-                            digest, size, chunks = self.object_store.put_file(
-                                Path(f"/proc/self/fd/{file_fd}"))
+                            if store_objects:
+                                digest, size, chunks = self.object_store.put_file(
+                                    Path(f"/proc/self/fd/{file_fd}"))
+                            else:
+                                hasher=hashlib.sha256();size=0
+                                while True:
+                                    block=os.read(file_fd,1024*1024)
+                                    if not block: break
+                                    hasher.update(block);size+=len(block)
+                                digest=hasher.hexdigest();chunks=()
                         except CorruptObject:
                             raise
                         except RepositoryError as error:
@@ -179,6 +231,10 @@ class ProjectRepository:
             os.close(root_fd)
         return entries, warnings
 
+    def inspect_tree(self, exclusions=(), *, excluded=None, include_store=False):
+        """Hash the current tree without creating objects or checkpoints."""
+        return self._scan(exclusions,excluded=excluded,store_objects=False,include_store=include_store)
+
     def _insert_checkpoint(self, connection: sqlite3.Connection, checkpoint: Checkpoint,
                            entries: list[FileEntry]) -> None:
         connection.execute(
@@ -199,26 +255,41 @@ class ProjectRepository:
                  for index, digest in enumerate(entry.chunk_digests)),
             )
 
-    def create_checkpoint(self, message: str, exclusions: Sequence[str] = ()) -> Checkpoint:
-        entries, warnings = self._scan(exclusions)
+    def create_checkpoint(self, message: str, exclusions: Sequence[str] = (), *,
+                          parent_id=LATEST_PARENT, excluded=None, publication_hook=None, publication_guard=None) -> Checkpoint:
+        if parent_id is not LATEST_PARENT and parent_id is not None:
+            with self._connect() as connection:
+                if connection.execute('SELECT 1 FROM checkpoints WHERE id=?', (parent_id,)).fetchone() is None:
+                    raise CheckpointNotFound('explicit parent checkpoint does not exist')
+        entries, warnings = self._scan(exclusions) if excluded is None else self._scan(exclusions, excluded=excluded)
         for entry in entries:
             for digest in entry.chunk_digests:
                 self.object_store.read_object(digest)
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            parent = connection.execute(
-                "SELECT id FROM checkpoints ORDER BY created_at DESC, rowid DESC LIMIT 1"
-            ).fetchone()
-            checkpoint = Checkpoint(
-                id=uuid.uuid4().hex,
-                message=message,
-                created_at=datetime.now(timezone.utc).isoformat(),
-                parent_id=parent[0] if parent else None,
-                file_count=len(entries),
-                logical_bytes=sum(entry.size for entry in entries),
-                warnings=tuple(warnings),
-            )
-            self._insert_checkpoint(connection, checkpoint, entries)
+        with publication_guard if publication_guard is not None else nullcontext():
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if parent_id is LATEST_PARENT:
+                    parent = connection.execute(
+                        "SELECT id FROM checkpoints ORDER BY created_at DESC, rowid DESC LIMIT 1"
+                    ).fetchone()
+                    selected_parent = parent[0] if parent else None
+                else:
+                    selected_parent = parent_id
+                    if parent_id is not None and connection.execute(
+                            'SELECT 1 FROM checkpoints WHERE id=?', (parent_id,)).fetchone() is None:
+                        raise CheckpointNotFound('explicit parent checkpoint does not exist')
+                checkpoint = Checkpoint(
+                    id=uuid.uuid4().hex,
+                    message=message,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                    parent_id=selected_parent,
+                    file_count=len(entries),
+                    logical_bytes=sum(entry.size for entry in entries),
+                    warnings=tuple(warnings),
+                )
+                self._insert_checkpoint(connection, checkpoint, entries)
+                if publication_hook is not None:
+                    publication_hook(connection, checkpoint)
         return checkpoint
 
     @staticmethod
