@@ -78,7 +78,9 @@ class ProjectCatalog:
             create_schema_v3(db)
             from .check_schema import create_schema_v4
             create_schema_v4(db)
-            db.execute('INSERT INTO core_metadata VALUES (1,4,?,?)', (registration['id'], registration['store_uuid']))
+            from .policy_schema import create_schema_v5
+            create_schema_v5(db)
+            db.execute('INSERT INTO core_metadata VALUES (1,5,?,?)', (registration['id'], registration['store_uuid']))
         catalog.database.chmod(0o600)
         ObjectStore._sync_directories((catalog.store / 'objects', catalog.store, catalog.store.parent))
         return catalog
@@ -100,7 +102,7 @@ class ProjectCatalog:
                 if db.execute('PRAGMA user_version').fetchone()[0] != 1:
                     raise CoreError('SCHEMA_VERSION_UNSUPPORTED', 'Unsupported checkpoint schema.', 'Use a compatible Solace version; preserve this store.')
                 row = db.execute('SELECT schema_version, project_id, store_uuid FROM core_metadata WHERE singleton=1').fetchone()
-                if row is None or row[0] not in (1, 2, 3, 4):
+                if row is None or row[0] not in (1, 2, 3, 4, 5):
                     raise CoreError('SCHEMA_VERSION_UNSUPPORTED', 'Unsupported core schema.', 'Use a compatible Solace version; preserve this store.')
                 if row[1:] != (r['id'], r['store_uuid']):
                     raise CoreError('STORE_IDENTITY_MISMATCH', 'This store belongs to a different project.', 'Select the original store; no data has been replaced.')
@@ -156,7 +158,7 @@ class ProjectCatalog:
     def find_operation(self, request):
         signature = fingerprint(request['method'], request['params'], request['actor'])
         with self.connect(metadata=True) as db:
-            if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3, 4):
+            if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3, 4, 5):
                 from .tasks import TaskCatalog
                 return TaskCatalog(self).lookup_request(request,db)
             row = db.execute('SELECT id,fingerprint FROM operations WHERE request_id=?', (request['id'],)).fetchone()
@@ -169,7 +171,7 @@ class ProjectCatalog:
     def accept_operation(self, request):
         signature = fingerprint(request['method'], request['params'], request['actor'])
         with self.connect(write=True) as db:
-            if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3, 4):
+            if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3, 4, 5):
                 from .tasks import TaskCatalog
                 cached=TaskCatalog(self).lookup_request(request,db)
                 if cached is not None:
@@ -218,7 +220,7 @@ class ProjectCatalog:
         db.execute('UPDATE operations SET state=?,updated_at=?,result_json=?,error_json=? WHERE id=?',
                    (state,self._now(),json.dumps(result) if result is not None else None,
                     json.dumps(error) if error is not None else None,operation_id))
-        if state in ('succeeded','failed','interrupted') and db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
+        if state in ('succeeded','failed','interrupted') and db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4, 5):
             # A visible terminal receipt releases ordinary reader ownership in
             # this same commit. Journals and retained exports keep their claims.
             db.execute("DELETE FROM integration_claims WHERE operation_id=? AND kind='target' "
@@ -261,7 +263,7 @@ class ProjectCatalog:
     def recover_interrupted(self):
         with self.connect(write=True, metadata=True) as db:
             ids = [r[0] for r in db.execute("SELECT id FROM operations WHERE state IN ('queued','running')")]
-            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4:
+            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (4, 5):
                 from .check_runs import CheckRuns
                 CheckRuns.recover(db)
             for operation in ids:
@@ -269,10 +271,10 @@ class ProjectCatalog:
                     continue
                 error = CoreError('OPERATION_INTERRUPTED', 'The core stopped before a committed result.', 'Inspect the operation and any restore destination before starting new work.').as_dict()
                 self._transition(db, operation, 'interrupted', error=error)
-                if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3, 4):
+                if db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0] in (2, 3, 4, 5):
                     intent=db.execute("SELECT phase FROM workspace_intents WHERE operation_id=? OR recovery_operation_id=?",(operation,operation)).fetchone()
                     journal=None
-                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4, 5):
                         journal=db.execute("SELECT phase FROM integration_journals WHERE operation_id=? AND phase NOT IN ('committed','restored','abandoned')",(operation,)).fetchone()
                         if journal:
                             db.execute("UPDATE integration_plans SET state='recovery_required' WHERE id=(SELECT plan_id FROM integration_journals WHERE operation_id=?)",(operation,))
@@ -281,10 +283,10 @@ class ProjectCatalog:
                         else:
                             # Read reservations own no displaced files and are safe to release.
                             db.execute("DELETE FROM integration_claims WHERE operation_id=? AND kind='target'",(operation,))
-                    export = db.execute("SELECT 1 FROM integration_exports WHERE operation_id=? AND phase!='published'",(operation,)).fetchone() if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4) else None
+                    export = db.execute("SELECT 1 FROM integration_exports WHERE operation_id=? AND phase!='published'",(operation,)).fetchone() if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4, 5) else None
                     if not journal and not export and (intent is None or intent[0] in ('committed','abandoned')):
                         db.execute('DELETE FROM task_claims WHERE operation_id=?',(operation,))
-            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
+            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4, 5):
                 from .integration_recovery import IntegrationRecovery
                 IntegrationRecovery.classify_interrupted(db)
                 # Also cover a stop after success commit but before reader cleanup.

@@ -322,7 +322,7 @@ class CheckRuns:
     def recover(db):
         """No pass is reconstructed. Uncertain survivors retain their owned paths."""
         cursor = db.cursor(); cursor.row_factory = sqlite3.Row
-        if cursor.execute('SELECT schema_version FROM core_metadata').fetchone()[0] != 4: return
+        if cursor.execute('SELECT schema_version FROM core_metadata').fetchone()[0] not in (4, 5): return
         now = datetime.now(timezone.utc).isoformat()
         for row in cursor.execute("SELECT * FROM check_runs WHERE state IN ('reserved','running')").fetchall():
             result = json.loads(row['result_json'] or '{}')

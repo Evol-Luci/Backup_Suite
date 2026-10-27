@@ -197,7 +197,7 @@ class TaskOperations:
         finally:
             try:
                 with self.catalog.connect(write=True) as db:
-                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4, 5):
                         db.execute('DELETE FROM integration_claims WHERE operation_id=?',(operation,))
             except Exception:
                 self.service._pending_recovery.add(self.project)

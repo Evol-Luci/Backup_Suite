@@ -152,18 +152,18 @@ class WorkspacePaths:
                 catalog.validate(require_root=False,allow_mount_change=not registered)
                 with readonly_database(catalog.database) as db:
                     version=db.execute('SELECT schema_version FROM core_metadata').fetchone()[0]
-                    if version in (2, 3, 4):
+                    if version in (2, 3, 4, 5):
                         locations += [(Path(r[0]),r[1]) for r in db.execute('SELECT path,id FROM workspaces')]
                         for r in db.execute('SELECT staging_path,final_path,workspace_id,phase FROM workspace_intents'):
                             locations += [(Path(path),r[2]) for path in r[:2]
                                           if path and (r[3]!='abandoned' or os.path.lexists(path))]
                         locations += [(Path(r[0]),None) for r in db.execute('SELECT path FROM workspace_caches')]
-                    if version == 4:
+                    if version in (4, 5):
                         for r in db.execute('SELECT staging_path FROM check_runs'):
                             stage = Path(r[0])
                             locations += [(owned,None) for owned in {stage,stage.parent.parent/'check-evidence'/stage.name,
                                 Path(record['store'])/'check-runs'/stage.name,Path(record['store'])/'check-evidence'/stage.name}]
-                    if version in (3, 4):
+                    if version in (3, 4, 5):
                         for table,column in (('integration_journals','journal_path'),('integration_exports','path')):
                             locations += [(Path(r[0]),None) for r in db.execute(f'SELECT {column} FROM {table}')]
                         query = 'SELECT path FROM integration_claims'
@@ -184,7 +184,7 @@ class WorkspacePaths:
             try:
                 catalog.validate(require_root=False,allow_mount_change=not registered)
                 with readonly_database(catalog.database) as db:
-                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4:
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (4, 5):
                         for path,run,state in db.execute('SELECT staging_path,id,state FROM check_runs'):
                             owned_paths = {Path(path), Path(path).parent.parent/'check-evidence'/run}
                             # Do not reject the explicit candidate placement against
@@ -194,7 +194,7 @@ class WorkspacePaths:
                                                     Path(record['store'])/'check-evidence'/run))
                             for owned in owned_paths:
                                 claims.append(dict(path=str(owned),operation_id='check:'+run,kind='check',phase=state))
-                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4, 5):
                         for path,operation,kind,phase in db.execute(
                             'SELECT c.path,c.operation_id,c.kind,j.phase FROM integration_claims c '
                             'LEFT JOIN integration_journals j ON c.operation_id=j.operation_id'):

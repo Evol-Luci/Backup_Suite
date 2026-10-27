@@ -83,10 +83,10 @@ class CheckSchemaTests(unittest.TestCase):
             self.assertEqual(before, {table: db.execute('SELECT * FROM ' + table).fetchall() for table in before})
             self.assertEqual(approval_sql, db.execute("SELECT sql FROM sqlite_master WHERE name='integration_approvals'").fetchone()[0])
 
-    def test_fresh_store_is_schema_four(self):
+    def test_fresh_store_is_schema_five(self):
         self.registration['store'] = str(self.base / 'fresh')
         self.catalog = ProjectCatalog.create(self.registration, self.policy)
-        self.assertEqual(schema_version(self.catalog), 4)
+        self.assertEqual(schema_version(self.catalog), 5)
         self.assertFalse(preview_upgrade(self.catalog)['required'])
 
     def test_checks_require_four_and_ddl_failure_rolls_back(self):

@@ -135,7 +135,7 @@ class TaskCatalog:
         for state,count in db.execute('SELECT state,COUNT(*) FROM tasks WHERE parent_id=? GROUP BY state',(task_id,)):
             counts[state]=count
         application=dict(ready=counts['ready'],applied=0,unapplied=counts['ready'])
-        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
+        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4, 5):
             workspace=db.execute('SELECT id FROM workspaces WHERE task_id=?',(task_id,)).fetchone()
             if workspace:
                 application['applied']=db.execute("""
@@ -164,7 +164,7 @@ class TaskCatalog:
             task.update(self.summary(db,task_id))
             task['results']=[r[0] for r in db.execute("SELECT checkpoint_id FROM task_checkpoint_refs WHERE task_id=? AND role='result' ORDER BY created_at,rowid",(task_id,))]
             task['latest_result_application']=None
-            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
+            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4, 5):
                 from .integration_commit import IntegrationCommit
                 parent_workspace=db.execute('SELECT id FROM workspaces WHERE task_id=?',(task['parent_id'],)).fetchone() if task['parent_id'] else None
                 if not task['parent_id'] or parent_workspace:
@@ -178,7 +178,7 @@ class TaskCatalog:
                 from .workspace_paths import directory_identity
                 w=dict(workspace)
                 claims=[]
-                if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
+                if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4, 5):
                     from .workspace_paths import overlap
                     claims=[dict(row) for row in db.execute(
                         "SELECT c.path,CASE WHEN j.operation_id IS NOT NULL AND o.state='interrupted' THEN 'recovery_required' ELSE j.phase END AS phase FROM integration_claims c "

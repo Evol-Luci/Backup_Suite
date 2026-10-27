@@ -117,7 +117,7 @@ class IntegrationReview:
         if receipt:
             result['checks'] = json.loads(receipt['details_json'])['checks']
         elif plan['state'] in ('approved','applying','recovery_required') and db.execute(
-                'SELECT schema_version FROM core_metadata').fetchone()[0] == 4:
+                'SELECT schema_version FROM core_metadata').fetchone()[0] in (4, 5):
             journal = db.execute("SELECT intent_json FROM integration_journals WHERE plan_id=? AND revision=? "
                                  "AND phase NOT IN ('committed','restored','abandoned')",
                                  (plan['id'],plan['current_revision'])).fetchone()

@@ -13,7 +13,7 @@ class CheckSelection:
     @staticmethod
     def selected(db, task_id: str) -> dict | None:
         # Older catalogs remain readable without introducing schema-four queries.
-        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] != 4:
+        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] not in (4, 5):
             return None
         cursor = db.cursor()
         cursor.row_factory = sqlite3.Row

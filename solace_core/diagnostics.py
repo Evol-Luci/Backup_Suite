@@ -22,7 +22,7 @@ def inspect(registration, policy=None):
             version=db.execute('SELECT schema_version FROM core_metadata WHERE singleton=1').fetchone()[0]
             result.update(core_schema=version,engine_schema=db.execute('PRAGMA user_version').fetchone()[0],
                           task_upgrade_required=(version==1),database_rollback='Runtime rollback does not downgrade project databases or erase task/workspace references.')
-            if version in (2, 3, 4):
+            if version in (2, 3, 4, 5):
                 result['tasks']={state:0 for state in ('created','active','blocked','ready','cancelled')}
                 result['tasks'].update({row[0]:row[1] for row in db.execute('SELECT state,COUNT(*) FROM tasks GROUP BY state')})
                 result['workspaces']=[]
@@ -34,7 +34,7 @@ def inspect(registration, policy=None):
                         available=all(actual[key]==identity[key] for key in ('path','mount_id','device','inode'))
                     except (OSError,CoreError):available=False
                     result['workspaces'].append(dict(id=identity['id'],task_id=identity['task_id'],available=available))
-            if version in (3, 4):
+            if version in (3, 4, 5):
                 # Aggregate metadata only; never load plans/CAS, approvals or prompt bodies.
                 result['integrations'] = dict(
                     plans={r[0]:r[1] for r in db.execute('SELECT state,COUNT(*) FROM integration_plans GROUP BY state')},

@@ -80,7 +80,7 @@ class CheckApprovals:
     def lookup(db, plan_id, revision, raw_token):
         hashed = hashlib.sha256(raw_token.encode()).hexdigest()
         rows = []
-        for table in ('integration_approvals','integration_checked_approvals') if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4 else ('integration_approvals',):
+        for table in ('integration_approvals','integration_checked_approvals') if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (4, 5) else ('integration_approvals',):
             row = db.execute('SELECT * FROM '+table+' WHERE token_sha256=?',(hashed,)).fetchone()
             if row: rows.append((table,row))
         if len(rows)!=1: stale('The supplied approval is missing or ambiguous.')
