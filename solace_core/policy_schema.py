@@ -18,9 +18,9 @@ CREATE TABLE task_integration_policy (
 );
 CREATE TABLE integration_policy_intents (
  id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), result_checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id),
- target_key TEXT NOT NULL, target_revision INTEGER, task_revision INTEGER NOT NULL,
+ target_key TEXT NOT NULL, target_revision INTEGER, target_checkpoint_id TEXT, task_revision INTEGER NOT NULL,
  policy_revision INTEGER NOT NULL, profile_id TEXT NOT NULL, profile_revision INTEGER NOT NULL, profile_digest TEXT NOT NULL,
- stage TEXT NOT NULL, prepare_request_id TEXT NOT NULL UNIQUE, check_request_id TEXT NOT NULL UNIQUE,
+ selected_profile_id TEXT, stage TEXT NOT NULL, prepare_request_id TEXT NOT NULL UNIQUE, check_request_id TEXT NOT NULL UNIQUE,
  prepare_operation_id TEXT, check_operation_id TEXT, plan_id TEXT, plan_revision INTEGER, run_id TEXT,
  reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
  UNIQUE(task_id,result_checkpoint_id,target_key)

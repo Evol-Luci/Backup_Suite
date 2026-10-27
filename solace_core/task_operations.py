@@ -282,6 +282,9 @@ class TaskOperations:
         db.execute('UPDATE workspaces SET head_checkpoint=? WHERE id=?',(checkpoint.id,workspace['id']))
         state='ready' if ready else context['state'];revision=context['expected_revision']+1
         db.execute('UPDATE tasks SET state=?,revision=?,updated_at=?,block_reason=? WHERE id=?',(state,revision,now,None if ready else self.tasks.row(db,context['task'])['block_reason'],context['task']))
+        if ready:
+            from .policy_queue import PolicyQueue
+            PolicyQueue.enqueue_ready(db,self.catalog,context['task'],checkpoint.id,revision,now)
         self.catalog._transition(db,operation_id,'succeeded',result=dict(checkpoint_id=checkpoint.id,task_id=context['task'],workspace_id=workspace['id'],
             revision=revision,file_count=checkpoint.file_count,logical_bytes=checkpoint.logical_bytes),kind='task.ready' if ready else 'workspace.checkpointed')
         self.tasks.release(db,operation_id)
