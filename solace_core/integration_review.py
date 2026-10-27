@@ -110,6 +110,27 @@ class IntegrationReview:
                       task_id=plan['task_id'], result_id=plan['result_id'], target_key=plan['target_key'],
                       validated_at=row['validated_at'], counts=counts, manifest_sha256=row['manifest_sha256'],
                       checks='not_run_by_solace')
+        # Applied receipts and reserved journals identify the exact selected
+        # approval. Before reservation the approved revision has one approval.
+        receipt = db.execute('SELECT details_json FROM integration_receipts WHERE plan_id=? AND revision=?',
+                             (plan['id'],plan['current_revision'])).fetchone()
+        if receipt:
+            result['checks'] = json.loads(receipt['details_json'])['checks']
+        elif plan['state'] in ('approved','applying','recovery_required') and db.execute(
+                'SELECT schema_version FROM core_metadata').fetchone()[0] == 4:
+            journal = db.execute("SELECT intent_json FROM integration_journals WHERE plan_id=? AND revision=? "
+                                 "AND phase NOT IN ('committed','restored','abandoned')",
+                                 (plan['id'],plan['current_revision'])).fetchone()
+            if journal:
+                selected = json.loads(journal['intent_json']).get('approval') or {}
+                result['checks'] = selected.get('binding',{}).get('checks','not_run_by_solace')
+            else:
+                approval = db.execute('SELECT binding_json FROM integration_checked_approvals WHERE plan_id=? AND revision=?',
+                                      (plan['id'],plan['current_revision'])).fetchone()
+                if approval:
+                    result['checks'] = json.loads(approval['binding_json'])['checks']
+        from .check_selection import CheckSelection
+        result['check_profile'] = CheckSelection.selected(db, plan['task_id'])
         if plan['state'] == 'prepared':
             result['review_token'] = row['review_token']
         return _bounded(result, SUMMARY_BYTES)

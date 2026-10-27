@@ -123,7 +123,7 @@ class TaskCLITests(TaskCase):
     def test_install_preview_has_schema_boundary_and_does_not_install(self):
         result=subprocess.run([sys.executable,'packaging/install-core.py','--preview'],env=self.env,capture_output=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr.decode());preview=json.loads(result.stdout)
-        self.assertEqual(preview['core_schema_supported'],[1,2,3]);self.assertEqual(preview['core_schema_created'],3)
+        self.assertEqual(preview['core_schema_supported'],[1,2,3,4]);self.assertEqual(preview['core_schema_created'],4)
         self.assertIn('does not downgrade',preview['database_rollback'])
         self.assertFalse((self.base/'home/.local/bin/solace').exists())
 
@@ -135,14 +135,14 @@ class TaskCLITests(TaskCase):
     def test_doctor_and_storage_report_schema_and_shared_extent_limit(self):
         task=self.create_task();self.start(task)
         report=self.result('doctor',self.project)
-        self.assertEqual(report['projects'][0]['core_schema'],3)
+        self.assertEqual(report['projects'][0]['core_schema'],4)
         self.assertEqual(report['projects'][0]['tasks']['active'],1)
         self.assertIn('does not downgrade',report['projects'][0]['database_rollback'])
         usage=self.result('checkpoint','usage',self.project)
         self.assertIsNone(usage['unique_physical_bytes'])
         self.assertEqual(usage['shared_extent_accounting'],'unavailable')
         self.assertIn('workspace_logical_bytes',usage)
-        self.assertEqual(self.result('project','show',self.project)['core_schema'],3)
+        self.assertEqual(self.result('project','show',self.project)['core_schema'],4)
 
     def test_wait_timeout_keeps_operation_id(self):
         from solace_core.task_cli import wait_for_operation

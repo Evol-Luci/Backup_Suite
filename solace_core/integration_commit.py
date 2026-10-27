@@ -84,11 +84,17 @@ class IntegrationCommit:
                 plan.incoming.checkpoint_id != plan.result_id):
             stale('The journal no longer matches its exact reviewed version binding.')
         selected = intent.get('approval')
-        approval = rowdict(db,'SELECT * FROM integration_approvals WHERE id=?',(selected.get('id'),)) if isinstance(selected,dict) else None
-        if (not approval or selected != dict(id=approval['id'],token_sha256=approval['token_sha256'],binding=json.loads(approval['binding_json'])) or
-                selected['binding'] != binding or approval['plan_id'] != plan.id or approval['revision'] != plan.revision or
-                approval['accepted_unchecked'] != 1):
-            stale('The selected approval does not authorize this exact publication.')
+        if isinstance(selected,dict) and isinstance(selected.get('binding',{}).get('checks'),dict):
+            from .check_approvals import CheckApprovals
+            CheckApprovals.verify(db,selected,plan)
+            if {**selected['binding'], 'checks':'not_run_by_solace'} != binding:
+                stale('The checked approval differs from the reviewed binding.')
+        else:
+            approval = rowdict(db,'SELECT * FROM integration_approvals WHERE id=?',(selected.get('id'),)) if isinstance(selected,dict) else None
+            if (not approval or selected != dict(id=approval['id'],token_sha256=approval['token_sha256'],binding=json.loads(approval['binding_json'])) or
+                    selected['binding'] != binding or approval['plan_id'] != plan.id or approval['revision'] != plan.revision or
+                    approval['accepted_unchecked'] != 1):
+                stale('The selected approval does not authorize this exact publication.')
         target = replace(target, identity=journal.target)
         plan = replace(plan, target=target)
         task = self.tasks.row(db,plan.task_id)
@@ -168,7 +174,7 @@ class IntegrationCommit:
         self.catalog._event(db,operation,'integration.applied','succeeded',dict(receipt_id=receipt_id,plan_id=plan.id,revision=plan.revision))
         event_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
         details = dict(project_id=self.catalog.registration['id'],actor=operation['actor'],event_id=event_id,
-                       original_operation_id=journal.operation_id,approval=intent['approval'],checks='not_run_by_solace',
+                       original_operation_id=journal.operation_id,approval=intent['approval'],checks=intent['approval']['binding']['checks'],
                        previous_receipt_id=revision['previous_receipt_id'],target=asdict(plan.target),
                        profile=json.loads(revision['profile_json']),protected_roots=intent['expected']['protected_roots'],
                        decisions=dict(plan_id=plan.id,revision=plan.revision),
@@ -179,7 +185,7 @@ class IntegrationCommit:
         db.execute("UPDATE integration_plans SET state='applied',updated_at=? WHERE id=?",(now,plan.id))
         result = dict(receipt_id=receipt_id,plan_id=plan.id,revision=plan.revision,task_id=plan.task_id,
                       result_id=plan.result_id,target_key=plan.target.key,before_id=before,after_id=after,
-                      operation_id=operation_id,event_id=event_id,checks='not_run_by_solace')
+                      operation_id=operation_id,event_id=event_id,checks=intent['approval']['binding']['checks'])
         self.catalog._transition(db,operation_id,'succeeded',result=result)
         if operation_id != journal.operation_id:
             db.execute('UPDATE integration_recoveries SET result_json=? WHERE operation_id=?',(canonical(result),operation_id))

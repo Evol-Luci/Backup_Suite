@@ -8,7 +8,7 @@ INTEGRATION_PARAMS: dict[str, tuple[set[str], set[str]]] = {
     'integration.diff': ({'project','plan'}, {'revision','after','limit','path','version','offset'}),
     'integration.resolve': ({'project','plan','revision','path'}, {'take','from_file'}),
     'integration.export': ({'project','plan','revision','destination'}, set()),
-    'integration.approve': ({'project','plan','revision','token','accept_unchecked'}, set()),
+    'integration.approve': ({'project','plan','revision','token'}, {'accept_unchecked','check_run'}),
     'integration.apply': ({'project','plan','revision','approval','writers_paused'}, set()),
     'integration.receipt': ({'project','receipt'}, {'after','limit'}),
     'integration.abandon': ({'project','plan','revision'}, set()),
@@ -16,7 +16,7 @@ INTEGRATION_PARAMS: dict[str, tuple[set[str], set[str]]] = {
     'integration.recovery.resume': ({'project','operation','writers_paused'}, {'target_path','journal_path','confirmed_target','confirmed_journal'}),
     'integration.recovery.restore-before': ({'project','operation','writers_paused'}, {'target_path','journal_path','confirmed_target','confirmed_journal'}),
 }
-_IDS = {'project','task','result','plan','receipt','operation'}
+_IDS = {'project','task','result','plan','receipt','operation','check_run'}
 _POSITIVE = {'revision','expected_revision','expected_target_revision'}
 _ABSOLUTE = {'from_file','destination','target_path','journal_path','confirmed_target','confirmed_journal'}
 _GROUP = {'target_path','journal_path','confirmed_target','confirmed_journal'}
@@ -51,6 +51,8 @@ def validate_integration(method: str, params: dict) -> None:
             raise invalid('Take must be current, incoming or delete.')
         elif key=='version' and value not in ('base','current','incoming','candidate'):
             raise invalid('Content version must be base, current, incoming or candidate.')
+    if method=='integration.approve' and (('accept_unchecked' in params)==('check_run' in params)):
+        raise invalid('Approval requires exactly one of accept_unchecked or check_run.')
     if method=='integration.resolve' and (('take' in params)==('from_file' in params)):
         raise invalid('Resolve requires exactly one of take and from_file.')
     if method=='integration.diff':

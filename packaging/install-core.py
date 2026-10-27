@@ -160,7 +160,7 @@ def main():
         preview=safe_path(args.preview_dir.absolute());preview.mkdir(mode=0o700,parents=True,exist_ok=True)
         for path,(content,mode) in destinations.items(): atomic_write(preview/path.name,content,mode)
     print(json.dumps(dict(mode='installed' if args.apply else 'preview',runtime=str(runtime),
-          core_schema_supported=[1,2,3],core_schema_created=3,database_rollback='Runtime rollback does not downgrade project databases or erase task/workspace references.',
+          core_schema_supported=[1,2,3,4],core_schema_created=4,database_rollback='Runtime rollback does not downgrade project databases or erase task/workspace references.',
           files=[str(path) for path in destinations],runtime_files=list(files),backup=str(backup) if backup else None,
           activation_commands=['systemctl --user daemon-reload','systemctl --user enable --now solace-core.socket'],
           rollback_command=shlex.join([sys.executable,str(SOURCE/'packaging/install-core.py'),'--rollback',str(backup)]) if backup else None),indent=2))

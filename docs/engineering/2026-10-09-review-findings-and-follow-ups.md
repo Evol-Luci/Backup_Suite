@@ -94,3 +94,7 @@ The approved plan is implemented in the development branch. All 114 tests pass (
 ## Installed core acceptance, 2026-10-15
 
 A separate reviewer identified five Important edge-case findings. Reproductions and bounded fixes passed, with 122 total automated tests (57 core, 49 engine, 16 legacy/Tk). The reviewed core was then installed and passed 28 real systemd/CLI acceptance checks, including deliberate process termination and automatic restart recovery. The final registry is empty and doctor is healthy; the small fixture store was preserved after unregister. See [the independent-review and live-acceptance record](2026-10-14-local-core-independent-review-and-acceptance.md) for evidence and rollback. Actual logout behavior and full interactive GUI rendering remain unverified.
+
+## Configured checks source continuation, 2026-10-26
+
+The source branch adds manually approved checks on isolated integration candidates. Installed-runtime acceptance and existing-store upgrades remain separate gates. See the [configured checks handoff](configured-checks-handoff.md) for current evidence and blockers. Automatic integration policy remains a later design and must define project-required minimum checks.

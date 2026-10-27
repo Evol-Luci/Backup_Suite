@@ -29,6 +29,7 @@ class CoreService:
         self._guard = threading.RLock()
         self._catalogs, self._coordinators = {}, {}
         self._pending_recovery = set()
+        self._check_cancellations = {}
         self._lock_fd = os.open(registry.path.parent / 'core.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -57,6 +58,7 @@ class CoreService:
         with self._guard:
             if self._closed: return
             self._closed = True
+            for cancellation in self._check_cancellations.values(): cancellation.set()
         if self.maintenance is not None: self.maintenance.close()
         self.executor.shutdown(wait=True)
         os.close(self._lock_fd)
@@ -118,7 +120,7 @@ class CoreService:
         """Complete the latest explicit registry hand-off, including after a crash."""
         import json
         from .schema import schema_version
-        if schema_version(catalog) not in (2, 3): return
+        if schema_version(catalog) not in (2, 3, 4): return
         with self.registry.connect() as db:
             receipts=[(row[0],json.loads(row[1])) for row in db.execute('SELECT id,response_json FROM requests ORDER BY rowid DESC')]
         for request_id,value in receipts:
@@ -134,8 +136,8 @@ class CoreService:
         from .schema import schema_version
         from .workspace_paths import directory_identity
         import json
-        if schema_version(catalog) not in (2, 3): return
-        if schema_version(catalog) == 3:
+        if schema_version(catalog) not in (2, 3, 4): return
+        if schema_version(catalog) in (3, 4):
             from .integration_recovery import IntegrationRecovery
             IntegrationRecovery(self,catalog).reconcile_location(previous,request_id)
         from .workspace_trees import _verify_tree,_targets,_manifest_digest
@@ -189,8 +191,8 @@ class CoreService:
         method, p, actor, reqid = request['method'], request['params'], request['actor'], request['id']
         if method == 'core.status':
             return dict(pid=os.getpid(), protocol_version=1, projects=self.registry.list(), recovery=self.recovery,
-                        capabilities=['tasks.v1','workspaces.v1','project-upgrade.v1','prompt-retention.v1','integrations.v1'],
-                        core_schema_supported=[1,2,3],core_schema_created=3,
+                        capabilities=['tasks.v1','workspaces.v1','project-upgrade.v1','prompt-retention.v1','integrations.v1','checks.v1'],
+                        core_schema_supported=[1,2,3,4],core_schema_created=4,
                         prompt_maintenance=dict(self.maintenance.failures) if self.maintenance else {})
         if method == 'doctor':
             from .diagnostics import inspect_registry
@@ -200,6 +202,31 @@ class CoreService:
         if method == 'project.list':
             return {'projects': self.registry.list()}
         project = p['project']
+        if method.startswith('project.check-profile.') or method == 'task.check-profile.select':
+            from .schema import require_checks
+            from .check_profiles import CheckProfiles
+            from .check_selection import CheckSelection
+            catalog = self.catalog(project)
+            require_checks(catalog)
+            profiles = CheckProfiles(catalog)
+            if method == 'project.check-profile.list': return profiles.list(p.get('after',0),p.get('limit',128))
+            if method == 'project.check-profile.show': return profiles.show(p['profile_id'])
+            if method == 'project.check-profile.preview': return profiles.preview(request)
+            if method == 'project.check-profile.apply': return profiles.apply(request)
+            return CheckSelection(catalog).select(request)
+        if method.startswith('integration.check.'):
+            from .check_runs import CheckRuns
+            catalog, registered = self._receipt_catalog(project,metadata=True)
+            from .schema import require_checks
+            require_checks(catalog)
+            runs = CheckRuns(self,catalog)
+            if method == 'integration.check.show': return runs.show(p['run'])
+            if method == 'integration.check.list': return runs.list(p['plan'],p.get('after',0),p.get('limit',128))
+            if method == 'integration.check.cancel': return runs.cancel(request)
+            if method == 'integration.check.run':
+                if not registered:
+                    raise CoreError('PROJECT_NOT_FOUND','New checks require a registered project.','Register the project before running checks.')
+                return runs.start(request)
         if method.startswith('integration.'):
             from .integration_operations import IntegrationOperations
             catalog, registered = self._receipt_catalog(project,metadata=True)
@@ -234,7 +261,9 @@ class CoreService:
                 if current is not None:
                     self.workspace_paths.assert_access(Path(current.registration['root']))
                     with current.connect() as db:
-                        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3 and db.execute("SELECT 1 FROM integration_journals WHERE phase NOT IN ('committed','restored','abandoned')").fetchone():
+                        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4 and db.execute("SELECT 1 FROM check_runs WHERE state IN ('reserved','running')").fetchone():
+                            raise CoreError('PROJECT_BUSY','A configured check still owns this project.','Wait for or cancel its run before changing registration.',True)
+                        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4) and db.execute("SELECT 1 FROM integration_journals WHERE phase NOT IN ('committed','restored','abandoned')").fetchone():
                             raise CoreError('INTEGRATION_TARGET_BUSY','Integration recovery still owns this project.','Resolve integration recovery before changing registration.',True)
                 if method == 'project.relink':
                     if current is None:
@@ -246,12 +275,15 @@ class CoreService:
                         candidate.update(root=str(Path(p['root']).resolve()),store=str(location.canonical),mount_id=location.mount_id)
                         repair=ProjectCatalog(candidate,self.registry.policy)
                         repair.validate()
+                        with repair.connect() as db:
+                            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4 and db.execute("SELECT 1 FROM check_runs WHERE state IN ('reserved','running')").fetchone():
+                                raise CoreError('PROJECT_BUSY','A configured check still owns this project.','Resolve its run before changing registration.',True)
                         # Registry receipt plus logical unresolved-journal ownership
                         # gates the moved aliases until explicit recovery handoff.
                         repair.recover_interrupted()
                     if current is not None:
                         from .schema import schema_version
-                        if schema_version(current) in (2, 3):
+                        if schema_version(current) in (2, 3, 4):
                             with current.connect() as db:
                                 if db.execute('SELECT 1 FROM task_claims LIMIT 1').fetchone():
                                     raise CoreError('TASK_BUSY','Workspace recovery still owns this project.','Resolve or abandon it before relocating available storage.')
@@ -261,7 +293,7 @@ class CoreService:
                     if current is None:
                         raise CoreError('STORE_UNAVAILABLE','Task ownership cannot be checked while the catalog is unavailable.','Reconnect or explicitly relink the store before unregistering.')
                     from .schema import schema_version
-                    if schema_version(current) in (2, 3):
+                    if schema_version(current) in (2, 3, 4):
                         from .tasks import TaskCatalog
                         with current.connect() as db: TaskCatalog(current).assert_project_unregisterable(db)
                     result = self.registry.unregister(project, reqid, actor)
@@ -288,7 +320,7 @@ class CoreService:
                 if method=='project.upgrade':
                     if not p['preview']:
                         from .schema import schema_version
-                        if schema_version(catalog) in (2, 3):
+                        if schema_version(catalog) in (2, 3, 4):
                             with catalog.connect() as db: cached=TaskCatalog(catalog).lookup_request(request,db)
                             if cached is not None: return cached
                     if not registered: raise CoreError('PROJECT_NOT_FOUND','The project is no longer registered.','Register it before upgrading.')
@@ -360,13 +392,13 @@ class CoreService:
             repo = catalog.open_existing()
             if method == 'checkpoint.list':
                 from .schema import schema_version
-                if schema_version(catalog) in (2, 3):
+                if schema_version(catalog) in (2, 3, 4):
                     from .lineage import Lineage
                     return {'checkpoints': Lineage(catalog).published(p.get('all_workspaces',False))}
                 return {'checkpoints': [asdict(cp) for cp in repo.list_checkpoints()]}
             if method == 'checkpoint.usage':
                 from .schema import schema_version
-                if schema_version(catalog) in (2, 3):
+                if schema_version(catalog) in (2, 3, 4):
                     from .lineage import Lineage
                     return Lineage(catalog).source_usage()
                 return asdict(repo.storage_usage())
@@ -393,7 +425,7 @@ class CoreService:
             repo = catalog.open_existing()
             if method == 'checkpoint.create':
                 from .schema import schema_version
-                if schema_version(catalog) in (2, 3):
+                if schema_version(catalog) in (2, 3, 4):
                     from .lineage import Lineage
                     lineage=Lineage(catalog)
                     def publish(db,cp):
@@ -428,7 +460,7 @@ class CoreService:
         finally:
             try:
                 with catalog.connect(write=True) as db:
-                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
                         db.execute('DELETE FROM integration_claims WHERE operation_id=?',(operation_id,))
             except Exception:
                 self._pending_recovery.add(catalog.registration['id'])

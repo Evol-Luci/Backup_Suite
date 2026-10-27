@@ -7,6 +7,7 @@ from pathlib import Path
 from .catalog import readonly_database
 from .errors import CoreError
 from .protocol import fingerprint
+from .check_schema import DDL as CHECK_DDL, create_schema_v4
 from .integration_schema import DDL as INTEGRATION_DDL, create_schema_v3
 from solace_engine.object_store import ObjectStore
 
@@ -116,13 +117,13 @@ def schema_version(catalog):
 
 
 def require_tasks(catalog):
-    if schema_version(catalog) not in (2, 3):
+    if schema_version(catalog) not in (2, 3, 4):
         raise CoreError('PROJECT_UPGRADE_REQUIRED', 'This project requires the task catalog upgrade.',
                         'Run project upgrade --preview, review it, then apply its plan token.')
 
 
 def require_integrations(catalog) -> None:
-    if schema_version(catalog) != 3:
+    if schema_version(catalog) not in (3, 4):
         raise CoreError("PROJECT_UPGRADE_REQUIRED",
                         "This project needs the integration catalog upgrade.",
                         "Review project upgrade --preview before applying its token.")
@@ -136,7 +137,8 @@ def _snapshot(catalog, db):
         head = db.execute('SELECT checkpoint_id FROM source_head WHERE singleton=1').fetchone()
     return dict(ddl_sha256=hashlib.sha256(DDL.encode()).hexdigest(),
                 integration_ddl_sha256=hashlib.sha256(INTEGRATION_DDL.encode()).hexdigest(),
-                target_schema=3,
+                check_ddl_sha256=hashlib.sha256(CHECK_DDL.encode()).hexdigest(),
+                target_schema=4 if version >= 3 else 3,
                 project=catalog.registration['id'], store_uuid=catalog.registration['store_uuid'],
                 store=str(catalog.store), mount_id=catalog.registration['mount_id'],
                 core_schema=version, engine_schema=db.execute('PRAGMA user_version').fetchone()[0],
@@ -154,7 +156,7 @@ def preview_upgrade(catalog):
     with readonly_database(catalog.database) as db:
         snapshot = _snapshot(catalog,db)
         pending = db.execute("SELECT 1 FROM operations WHERE state IN ('queued','running') LIMIT 1").fetchone()
-    return dict(required=snapshot['core_schema'] in (1, 2), from_schema=snapshot['core_schema'], to_schema=3,
+    return dict(required=snapshot['core_schema'] in (1, 2, 3), from_schema=snapshot['core_schema'], to_schema=snapshot['target_schema'],
                 plan_token=_token(snapshot), busy=bool(pending),
                 backup_directory=str(catalog.store/'schema-backups'),
                 rollback='Runtime rollback does not downgrade project databases.', snapshot=snapshot)
@@ -168,7 +170,7 @@ def apply_upgrade(catalog, plan_token, request):
         operation = db.execute('SELECT 1 FROM operations WHERE request_id=?', (request['id'],)).fetchone()
         if operation:
             raise CoreError('REQUEST_ID_REUSED','This request ID belongs to an operation.','Use a new request ID.')
-        if version in (2, 3):
+        if version in (2, 3, 4):
             row = db.execute('SELECT fingerprint,result_json FROM task_requests WHERE request_id=?', (request['id'],)).fetchone()
             if row:
                 if row[0] != signature:
@@ -200,7 +202,8 @@ def apply_upgrade(catalog, plan_token, request):
     with backup.open('rb') as stream:
         os.fsync(stream.fileno())
     ObjectStore._sync_directories((backup_directory,directory,catalog.store))
-    result=dict(schema_version=3,backup=str(backup))
+    target=preview['to_schema']
+    result=dict(schema_version=target,backup=str(backup))
     with catalog.connect(write=True) as db:
         if _token(_snapshot(catalog,db))!=plan_token:
             raise CoreError('UPGRADE_PREVIEW_STALE','The catalog changed before migration.','Review a fresh preview; backup evidence was preserved.')
@@ -209,9 +212,18 @@ def apply_upgrade(catalog, plan_token, request):
             legacy=json.dumps(dict(version=1,protected=[],exclusions=None,origin='legacy_unknown'),sort_keys=True)
             db.execute("INSERT INTO checkpoint_context SELECT id,'source',NULL,NULL,?,1 FROM checkpoints",(legacy,))
             db.execute('UPDATE source_head SET checkpoint_id=? WHERE singleton=1',(preview['snapshot']['source_head'],))
-        create_schema_v3(db)
-        db.execute('UPDATE core_metadata SET schema_version=3 WHERE singleton=1')
-        catalog._event(db,dict(id=None,actor=request['actor']),'project.upgraded','succeeded',dict(from_schema=version,to_schema=3))
+        if version in (1, 2):
+            create_schema_v3(db)
+        else:
+            create_schema_v4(db)
+        db.execute('UPDATE core_metadata SET schema_version=? WHERE singleton=1',(target,))
+        catalog._event(db,dict(id=None,actor=request['actor']),'project.upgraded','succeeded',dict(from_schema=version,to_schema=target))
         db.execute('INSERT INTO task_requests VALUES (?,?,?,?)',(request['id'],signature,json.dumps(result),catalog._now()))
     catalog.notify()
     return result
+
+
+def require_checks(catalog) -> None:
+    if schema_version(catalog) != 4:
+        raise CoreError('PROJECT_UPGRADE_REQUIRED', 'This project needs the configured checks upgrade.',
+                        'Review project upgrade --preview before applying its token.')

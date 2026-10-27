@@ -257,7 +257,7 @@ class IntegrationSchemaTests(unittest.TestCase):
         self.assertEqual(TaskCatalog(self.catalog).show(task)['state'], 'created')
         self.assertEqual(self.catalog.find_operation(request), result)
 
-    def test_preview_is_read_only_and_new_stores_are_schema_three(self):
+    def test_preview_is_read_only_and_new_stores_are_schema_four(self):
         from solace_core.schema import preview_upgrade, require_integrations
         before = {p.relative_to(self.store): p.read_bytes() for p in self.store.rglob('*') if p.is_file()}
         preview = preview_upgrade(self.catalog)
@@ -269,11 +269,11 @@ class IntegrationSchemaTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'PROJECT_UPGRADE_REQUIRED')
         self.registration['store'] = str(self.base / 'new-store')
         self.catalog = ProjectCatalog.create(self.registration, self.policy)
-        self.assert_version(3)
+        self.assert_version(4)
         require_integrations(self.catalog)
         self.assertFalse(preview_upgrade(self.catalog)['required'])
         with self.catalog.connect() as db:
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'integration_%'").fetchone()[0], 11)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'integration_%'").fetchone()[0], 12)
 
     def test_direct_v1_to_v3_keeps_two_checkpoints(self):
         self.registration['store'] = str(self.base / 'v1-store')

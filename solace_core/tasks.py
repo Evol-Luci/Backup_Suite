@@ -106,6 +106,13 @@ class TaskCatalog:
             task=uuid.uuid4().hex
             db.execute('INSERT INTO tasks VALUES (?,?,?,\'created\',1,?,NULL,?,?)',
                        (task,parent,title,json.dumps(effective,sort_keys=True),now,now))
+            from .check_selection import CheckSelection
+            if 'check_profile' in p:
+                from .schema import require_checks
+                require_checks(self.catalog)
+                CheckSelection.insert(db,task,p['check_profile'],1,now)
+            elif parent:
+                CheckSelection.copy_parent(db,parent,task,now)
             PromptStore(self.catalog,now=self.now).insert(db,task,supplied,mode,days,now)
             if parent:
                 db.execute('UPDATE tasks SET revision=revision+1,updated_at=? WHERE id=?',(now,parent))
@@ -128,7 +135,7 @@ class TaskCatalog:
         for state,count in db.execute('SELECT state,COUNT(*) FROM tasks WHERE parent_id=? GROUP BY state',(task_id,)):
             counts[state]=count
         application=dict(ready=counts['ready'],applied=0,unapplied=counts['ready'])
-        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
             workspace=db.execute('SELECT id FROM workspaces WHERE task_id=?',(task_id,)).fetchone()
             if workspace:
                 application['applied']=db.execute("""
@@ -150,12 +157,14 @@ class TaskCatalog:
         from .prompts import PromptStore
         with self.catalog.connect() as db:
             task=self.row(db,task_id)
+            from .check_selection import CheckSelection
+            task['check_profile']=CheckSelection.selected(db,task_id)
             task['profile']=json.loads(task.pop('profile_json'))
             task['prompt']=PromptStore(self.catalog,now=self.now).metadata(db,task_id)
             task.update(self.summary(db,task_id))
             task['results']=[r[0] for r in db.execute("SELECT checkpoint_id FROM task_checkpoint_refs WHERE task_id=? AND role='result' ORDER BY created_at,rowid",(task_id,))]
             task['latest_result_application']=None
-            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+            if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
                 from .integration_commit import IntegrationCommit
                 parent_workspace=db.execute('SELECT id FROM workspaces WHERE task_id=?',(task['parent_id'],)).fetchone() if task['parent_id'] else None
                 if not task['parent_id'] or parent_workspace:
@@ -169,7 +178,7 @@ class TaskCatalog:
                 from .workspace_paths import directory_identity
                 w=dict(workspace)
                 claims=[]
-                if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 3:
+                if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
                     from .workspace_paths import overlap
                     claims=[dict(row) for row in db.execute(
                         "SELECT c.path,CASE WHEN j.operation_id IS NOT NULL AND o.state='interrupted' THEN 'recovery_required' ELSE j.phase END AS phase FROM integration_claims c "

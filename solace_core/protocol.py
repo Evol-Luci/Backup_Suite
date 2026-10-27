@@ -48,6 +48,9 @@ METHODS.update(TASK_PARAMS)
 from .integration_protocol import INTEGRATION_PARAMS, validate_integration
 PARAMS.update(INTEGRATION_PARAMS)
 METHODS.update(INTEGRATION_PARAMS)
+from .check_protocol import CHECK_PARAMS, validate_check
+PARAMS.update(CHECK_PARAMS)
+METHODS.update(CHECK_PARAMS)
 
 
 def encode_frame(value):
@@ -101,6 +104,9 @@ def validate_request(value):
     method, params = value['method'], value['params']
     if not isinstance(method, str) or method not in METHODS or not isinstance(params, dict):
         raise invalid('Unknown method or invalid parameters.')
+    if method in CHECK_PARAMS:
+        validate_check(method, params)
+        return value
     if method in INTEGRATION_PARAMS:
         validate_integration(method, params)
         return value

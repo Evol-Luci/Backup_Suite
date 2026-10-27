@@ -8,7 +8,7 @@ from .task_cli import unwrap
 
 def add_parsers(commands) -> None:
     integration = commands.add_parser('integration', help='Review saved results, unpublished candidates and applied receipts',
-        description='A result is an immutable saved checkpoint. A candidate is unpublished until explicitly approved and applied. A receipt records an applied result. Solace does not run checks.')
+        description='A result is an immutable saved checkpoint. A candidate is unpublished until explicitly approved and applied. A receipt records an applied result. Checks can be run on the exact candidate before approval.')
     actions = integration.add_subparsers(dest='action', required=True)
     for action in ('prepare','show','diff','resolve','export','approve','apply','receipt','abandon'):
         parser = actions.add_parser(action)
@@ -36,11 +36,15 @@ def add_parsers(commands) -> None:
         if action=='export': parser.add_argument('--to', dest='destination', required=True, help='Absolute new review-copy directory')
         if action=='approve':
             parser.add_argument('--token', required=True, help='Exact review token from integration show')
-            parser.add_argument('--accept-unchecked', action='store_true', required=True, help='Acknowledge Solace did not run checks')
+            choice = parser.add_mutually_exclusive_group(required=True)
+            choice.add_argument('--accept-unchecked', action='store_true', default=None, help='Acknowledge Solace did not run checks')
+            choice.add_argument('--check-run', help='Passing check run ID')
         if action=='apply':
             parser.add_argument('--approval', required=True, help='Exact approval token returned by integration approve')
             parser.add_argument('--writers-paused', action='store_true', required=True, help='Confirm external writers are paused')
         if action in ('prepare','export','apply'): parser.add_argument('--wait', action='store_true')
+    from .check_cli import add_integration_parser
+    add_integration_parser(actions)
     recovery = actions.add_parser('recovery', help='Inspect or explicitly recover an interrupted apply').add_subparsers(dest='recovery_action', required=True)
     for action in ('show','resume','restore-before'):
         parser = recovery.add_parser(action)
@@ -89,7 +93,7 @@ def prepare(client, args, project: str, request_id: str | None = None) -> tuple[
         fields = {
             'show': (), 'diff': ('revision','after','limit','path','version','offset'),
             'resolve': ('revision','path','take','from_file'), 'export': ('revision','destination'),
-            'approve': ('revision','token','accept_unchecked'), 'apply': ('revision','approval','writers_paused'),
+            'approve': ('revision','token','accept_unchecked','check_run'), 'apply': ('revision','approval','writers_paused'),
             'receipt': ('after','limit'), 'abandon': ('revision',),
             'recovery': ('after','limit') if getattr(args,'recovery_action',None)=='show' else
                         ('writers_paused','target_path','journal_path','confirmed_target','confirmed_journal'),
@@ -107,7 +111,18 @@ def emit(value, method, params, *, socket=None) -> None:
     if value['ok']:
         print(json.dumps(value['result'],indent=2,ensure_ascii=True,allow_nan=False),flush=True)
     else: emit_envelope(value, False)
-    print('Solace did not run checks. Review and run any needed checks yourself.', flush=True)
+    checks = value.get('result', {}).get('checks') if value.get('ok') else None
+    if isinstance(checks, dict) and checks.get('status'):
+        from .check_cli import status_message
+        print(status_message(checks['status']), flush=True)
+    elif checks == 'not_run_by_solace':
+        print('Unchecked: Solace did not run checks for this result.', flush=True)
+    elif value.get('ok') and params.get('accept_unchecked'):
+        print('Unchecked approval: Solace did not run checks for this approval.', flush=True)
+    elif value.get('ok') and params.get('check_run'):
+        print('Checked approval uses the selected passing run.', flush=True)
+    elif value.get('ok'):
+        print('Check evidence is unavailable in this response.', flush=True)
     project=params['project']
     command=['solace','integration']
     if not value['ok']:

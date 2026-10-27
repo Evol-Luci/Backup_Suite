@@ -1,7 +1,7 @@
 """Pinned command construction; the socket workflow lives in acceptance tests."""
 import unittest
 import shlex
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 from solace_core.cli import _parser
 from solace_core.errors import CoreError
@@ -100,13 +100,38 @@ class IntegrationCLITests(unittest.TestCase):
             emit(dict(ok=True,result=dict(receipt_id=ID,operation_id='c'*32,next_after=1)),
                  'integration.receipt',dict(project=ID,receipt=ID,limit=1))
         self.assertIn('--after 1 --limit 1 --json',output.getvalue())
+        self.assertIn('Check evidence is unavailable',output.getvalue())
+        self.assertNotIn('Solace did not run checks',output.getvalue())
+        output=StringIO()
+        with redirect_stdout(output):
+            emit(dict(ok=True,result=dict(receipt_id=ID,checks='not_run_by_solace')),
+                 'integration.receipt',dict(project=ID,receipt=ID))
         self.assertIn('Solace did not run checks',output.getvalue())
+        output=StringIO()
+        with redirect_stdout(output):
+            emit(dict(ok=True,result=dict(receipt_id=ID,checks=dict(status='passed'))),
+                 'integration.receipt',dict(project=ID,receipt=ID))
+        self.assertIn('Checks passed',output.getvalue())
+        self.assertNotIn('Solace did not run checks',output.getvalue())
         output=StringIO()
         with redirect_stdout(output):
             emit(dict(ok=True,result=dict(id='c'*32,state='interrupted',error=dict(code='INTEGRATION_RECOVERY_REQUIRED',message='Interrupted publication.',next_step='Inspect retained recovery.'))),
                  'integration.apply',dict(project=ID,plan=ID))
         self.assertIn('INTEGRATION_RECOVERY_REQUIRED',output.getvalue())
         self.assertIn('solace integration recovery show '+ID+' '+'c'*32,output.getvalue())
+
+    def test_rejected_approvals_do_not_claim_checks_or_acknowledgement(self):
+        from solace_core.integration_cli import emit
+        error = dict(ok=False, error=dict(code='STALE', message='Approval rejected.', next_step='Review again.'))
+        for mode in (dict(check_run=ID), dict(accept_unchecked=True)):
+            with self.subTest(mode=mode):
+                output, errors = StringIO(), StringIO()
+                with redirect_stdout(output), redirect_stderr(errors):
+                    emit(error, 'integration.approve', dict(project=ID, plan=ID, **mode))
+                self.assertNotIn('Checked approval uses', output.getvalue())
+                self.assertNotIn('Unchecked approval:', output.getvalue())
+                self.assertIn('Next command:', output.getvalue())
+                self.assertIn('Approval rejected.', errors.getvalue())
 
     def test_human_content_continuation_round_trips_leading_option_filename(self):
         from solace_core.integration_cli import emit
