@@ -143,11 +143,13 @@ class WorkspacePaths:
         """Read authoritative retained catalogs; fail closed if ownership is unknown."""
         from .catalog import ProjectCatalog,readonly_database
         locations=[]
-        for record in self.registry.known_registrations():
+        for record, registered in self.registry.known_registrations_with_status():
             if candidate is not None and record['id']==project_id: record=candidate
             catalog=ProjectCatalog(record,self.policy)
             try:
-                catalog.validate(require_root=False)
+                # A retired catalog is read only here. A boot can renumber its
+                # mount while its verified project/store UUID still owns paths.
+                catalog.validate(require_root=False,allow_mount_change=not registered)
                 with readonly_database(catalog.database) as db:
                     version=db.execute('SELECT schema_version FROM core_metadata').fetchone()[0]
                     if version in (2, 3, 4):
@@ -176,11 +178,11 @@ class WorkspacePaths:
     def active_claims(self,project_id=None,candidate=None):
         from .catalog import ProjectCatalog, readonly_database
         claims=[]
-        for record in self.registry.known_registrations():
+        for record, registered in self.registry.known_registrations_with_status():
             if candidate is not None and record['id']==project_id: record=candidate
             catalog=ProjectCatalog(record,self.policy)
             try:
-                catalog.validate(require_root=False)
+                catalog.validate(require_root=False,allow_mount_change=not registered)
                 with readonly_database(catalog.database) as db:
                     if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4:
                         for path,run,state in db.execute('SELECT staging_path,id,state FROM check_runs'):

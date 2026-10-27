@@ -44,7 +44,7 @@ class ProcessTests(unittest.TestCase):
         while True:
             try:
                 state = path.read_text().split(') ', 1)[1][0]
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
                 return  # The process was reaped while its proc entry was inspected.
             if state == 'Z':
                 return
