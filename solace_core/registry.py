@@ -130,14 +130,19 @@ class Registry:
 
     def known_registrations(self):
         """Latest known location, including catalogs retained after unregister."""
+        return [record for record, _ in self.known_registrations_with_status()]
+
+    def known_registrations_with_status(self):
+        """Return retained locations and whether each is still registered."""
         keys=('id','root','store','store_uuid','mount_id','created_at')
         records={}
         with self.connect() as db:
             for row in db.execute('SELECT response_json FROM requests ORDER BY rowid'):
                 value=json.loads(row[0])
                 if all(key in value for key in keys):
-                    records[value['id']]={key:value[key] for key in keys}
-            for row in db.execute('SELECT * FROM projects'): records[row['id']]=dict(row)
+                    records[value['id']]=({key:value[key] for key in keys},False)
+            for row in db.execute('SELECT * FROM projects'):
+                records[row['id']]=(dict(row),True)
         return list(records.values())
 
     def _available(self, record):

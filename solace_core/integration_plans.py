@@ -10,7 +10,6 @@ import stat
 import uuid
 
 from solace_engine.repository import ProjectRepository
-from .catalog import ProjectCatalog
 from .errors import CoreError, classify
 from .integration_merge import merge_entries, _entry_key
 from .integration_snapshots import SnapshotStore, canonical, entry_json, entry_from_json
@@ -143,20 +142,6 @@ class IntegrationPlans:
     def _boundaries(self, operation_id=None):
         roots = {self.catalog.store, self.paths.config.workspace_root, self.paths.registry.path.parent/'projects', *self.paths.config.sync_roots}
         roots.update(path for path, _ in self.paths.managed_locations(include_read_claims=False))
-        records = self.paths.registry.known_registrations()
-        for record in records:
-            catalog = ProjectCatalog(record, self.catalog.policy)
-            with catalog.connect() as db:
-                if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4:
-                    for row in db.execute('SELECT staging_path FROM check_runs'):
-                        stage = Path(row[0])
-                        roots.update((stage, stage.parent.parent/'check-evidence'/stage.name,
-                                      Path(record['store'])/'check-runs'/stage.name,
-                                      Path(record['store'])/'check-evidence'/stage.name))
-                if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
-                    for table, column in (('integration_journals', 'journal_path'), ('integration_exports', 'path'), ('integration_claims', 'path')):
-                        where = " WHERE kind!='target'" if table == 'integration_claims' else ''
-                        roots.update(Path(row[0]) for row in db.execute(f'SELECT {column} FROM {table}'+where))
         if operation_id:
             with self.catalog.connect() as db:
                 owned = {Path(row[0]) for row in db.execute("SELECT path FROM integration_claims WHERE operation_id=? AND kind!='target'",(operation_id,))}

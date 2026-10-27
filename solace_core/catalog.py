@@ -83,7 +83,7 @@ class ProjectCatalog:
         ObjectStore._sync_directories((catalog.store / 'objects', catalog.store, catalog.store.parent))
         return catalog
 
-    def validate(self, *, require_root=True, require_objects=True):
+    def validate(self, *, require_root=True, require_objects=True, allow_mount_change=False):
         r = self.registration
         root = Path(r['root'])
         if require_root and (root.is_symlink() or not root.is_dir()):
@@ -91,7 +91,7 @@ class ProjectCatalog:
         if self.store.is_symlink() or not self.store.is_dir():
             raise CoreError('STORE_UNAVAILABLE', 'The configured store is unavailable.', 'Reconnect storage or explicitly relink.')
         location = self.policy.check(self.store)
-        if location.mount_id != r['mount_id']:
+        if location.mount_id != r['mount_id'] and not allow_mount_change:
             raise CoreError('STORE_UNAVAILABLE', 'The configured store mount changed.', 'Explicitly relink to validate the store on its current mount.')
         if self.store == root or root.is_relative_to(self.store):
             raise CoreError('UNSUPPORTED_STORAGE', 'The store cannot contain its source root.', 'Explicitly relink to a separate source root.')
