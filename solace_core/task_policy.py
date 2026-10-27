@@ -25,16 +25,22 @@ class TaskPolicy:
         if db.execute("SELECT id FROM tasks WHERE id=?", (task_id,)).fetchone() is None:
             raise CoreError("TASK_NOT_FOUND", "Task was not found.", "Inspect the task list.")
         if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] != 5:
-            return dict(mode='manual', override='inherit', project_policy_revision=None,
+            return dict(mode='manual', override='inherit', project_policy_revision=None, override_project_policy_revision=None,
                         required_profile_id=None, required_profile_revision=None,
                         required_profile_digest=None, selected_profile_id=None)
         project = ProjectPolicy.current(db)
-        row = db.execute('SELECT mode FROM task_integration_policy WHERE task_id=?', (task_id,)).fetchone()
+        row = db.execute('SELECT mode,project_policy_revision FROM task_integration_policy WHERE task_id=?', (task_id,)).fetchone()
         override = row['mode'] if row else 'inherit'
+        override_revision = row['project_policy_revision'] if row else None
         mode = project['mode'] if override == 'inherit' else override
+        # Owner confirmation belongs to one project-policy revision. Preserve
+        # stale evidence, but require confirmation again to override the default.
+        if override == 'checked_queue' and override_revision != project['revision']:
+            mode = project['mode']
         if mode == 'checked_queue' and project['mode'] == 'manual' and not project['allow_task_opt_in']:
             mode = 'manual'
         return dict(mode=mode, override=override, project_policy_revision=project['revision'],
+                    override_project_policy_revision=override_revision,
                     **CheckSelection.policy_profiles(db, task_id, project))
 
     def show(self, task_id):
@@ -60,6 +66,10 @@ class TaskPolicy:
             if not project['required_profile_id']:
                 raise invalid('Task opt-in requires a project-required approved profile.')
             active_profile = self.profiles.active(db, project['required_profile_id'])
+            if (active_profile['revision'] != project['required_profile_revision']
+                    or active_profile['digest'] != project['required_profile_digest']):
+                raise CoreError('POLICY_PROFILE_STALE', 'The required profile changed since project policy confirmation.',
+                                'Review and reconfirm project policy before confirming task opt-in.')
         return dict(identity=self.profiles._identity(), task_id=task, task_revision=row['revision'],
                     mode=mode, project_policy=project, active_profile=active_profile, effective=self.effective(db, task))
 

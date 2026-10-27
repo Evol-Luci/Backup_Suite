@@ -78,3 +78,43 @@ class TaskPolicyTests(SelectionTests):
             db.execute('UPDATE core_metadata SET schema_version=4')
         self.assertEqual(self.tasks.show(task)['integration_policy']['mode'], 'manual')
         self.code('PROJECT_UPGRADE_REQUIRED', lambda: self.override(task, 'manual'))
+
+    def test_disabled_opt_in_does_not_reactivate_after_reenable(self):
+        profile = self.approved()
+        self.configure(mode='manual', profile=profile)
+        task = self.create()
+        self.override(task, 'checked_queue')
+        self.configure(mode='manual', allow=False)
+        self.configure(mode='manual', profile=profile)
+        self.assertEqual(self.policy.show(task)['mode'], 'manual')
+        self.assertEqual(self.policy.show(task)['override'], 'checked_queue')
+        self.override(task, 'checked_queue')
+        self.assertEqual(self.policy.show(task)['mode'], 'checked_queue')
+        self.configure(mode='checked_queue', profile=profile)
+        self.assertEqual(self.policy.show(task)['mode'], 'checked_queue')
+        self.assertNotEqual(self.policy.show(task)['override_project_policy_revision'], self.policy.show(task)['project_policy_revision'])
+        self.override(task, 'manual')
+        self.configure(mode='checked_queue', profile=profile)
+        self.assertEqual(self.policy.show(task)['mode'], 'manual')
+
+    def test_task_opt_in_rejects_profile_changes_until_project_reconfirmed(self):
+        from test_check_profiles import definition
+        profile = self.approved()
+        self.configure(mode='manual', profile=profile)
+        task = self.create()
+        params = dict(action='update', profile_id=profile, definition=definition('updated'))
+        preview = self.profiles.preview(self.request('project.check-profile.preview', **params))
+        self.profiles.apply(self.request('project.check-profile.apply', **params, confirmed=True, plan_token=preview['plan_token']))
+        self.code('POLICY_PROFILE_STALE', lambda: self.override(task, 'checked_queue'))
+        self.configure(mode='manual', profile=profile)
+        self.override(task, 'checked_queue')
+        self.assertEqual(self.policy.show(task)['mode'], 'checked_queue')
+
+    def test_task_opt_in_rejects_digest_mismatch_even_at_same_revision(self):
+        profile = self.approved()
+        self.configure(mode='manual', profile=profile)
+        task = self.create()
+        with self.catalog.connect(write=True) as db:
+            db.execute("UPDATE project_integration_policy SET required_profile_digest=?", ('0' * 64,))
+        self.code('POLICY_PROFILE_STALE', lambda: self.override(task, 'checked_queue'))
+        self.assertEqual(self.tasks.show(task)['revision'], 1)
