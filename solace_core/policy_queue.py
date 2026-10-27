@@ -8,6 +8,10 @@ from .policy_schema import require_policy
 from .task_policy import TaskPolicy
 
 
+# Fixed across process restarts and versions: stage names are part of identity.
+REQUEST_NAMESPACE = uuid.UUID('75fc411b-6e13-575c-b8e5-87b4fd95885d')
+
+
 class PolicyQueue:
     @staticmethod
     def enqueue_ready(db, catalog, task_id, checkpoint_id, task_revision, now):
@@ -44,7 +48,9 @@ class PolicyQueue:
                    'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                    (intent_id, task_id, checkpoint_id, key, revision, head, task_revision, effective['project_policy_revision'],
                     effective['required_profile_id'], effective['required_profile_revision'], effective['required_profile_digest'],
-                    effective['selected_profile_id'], 'queued', uuid.uuid4().hex, uuid.uuid4().hex, now, now))
+                    effective['selected_profile_id'], 'queued',
+                    uuid.uuid5(REQUEST_NAMESPACE, intent_id + ':prepare').hex,
+                    uuid.uuid5(REQUEST_NAMESPACE, intent_id + ':check').hex, now, now))
         return intent_id
 
     @staticmethod

@@ -1,6 +1,7 @@
 """Ready publication queues immutable policy evidence without applying files."""
 from task_fixture import TaskCase
-from solace_core.policy_queue import PolicyQueue
+import uuid
+from solace_core.policy_queue import PolicyQueue, REQUEST_NAMESPACE
 from solace_core.check_profiles import CheckProfiles
 from solace_core.project_policy import ProjectPolicy
 from test_check_profiles import definition
@@ -47,11 +48,17 @@ class PolicyQueueTests(TaskCase):
         self.assertEqual(intent['result_checkpoint_id'], checkpoint)
         self.assertEqual(intent['target_key'], 'source')
         self.assertFalse(intent['stale'])
+        for stage in ('prepare', 'check'):
+            self.assertEqual(intent[stage + '_request_id'], uuid.uuid5(REQUEST_NAMESPACE, intent['id'] + ':' + stage).hex)
+        self.assertNotEqual(intent['prepare_request_id'], intent['check_request_id'])
         self.assertEqual(self.service._dispatch(self.request('integration.queue.show', intent=intent['id'])), intent)
         revision = self.show(task)['revision']
         with self.catalog.connect(write=True) as db:
             again = PolicyQueue.enqueue_ready(db, self.catalog, task, checkpoint, revision, self.catalog._now())
         self.assertEqual(again, intent['id'])
+        replay = PolicyQueue.show(self.catalog, again)
+        self.assertEqual(replay['prepare_request_id'], intent['prepare_request_id'])
+        self.assertEqual(replay['check_request_id'], intent['check_request_id'])
         self.assertEqual(len(PolicyQueue.list(self.catalog)['intents']), 1)
         self.mutate('task.resume', task)
         self.assertIn('task_changed', PolicyQueue.show(self.catalog, again)['stale_reasons'])
