@@ -5,6 +5,7 @@ from unittest.mock import patch
 import test_check_profiles
 from test_check_profiles import definition
 from solace_core.project_policy import ProjectPolicy
+from solace_core.check_profiles import AUTHORITY_WARNING
 
 
 class ProjectPolicyTests(unittest.TestCase):
@@ -32,6 +33,7 @@ class ProjectPolicyTests(unittest.TestCase):
         profile = self.create_profile()
         params = dict(mode='checked_queue', required_profile=profile['profile_id'], allow_task_opt_in=True)
         preview = self.preview(**params)
+        self.assertEqual(preview['authority_warning'], AUTHORITY_WARNING)
         self.assert_code('POLICY_CONFIRMATION_REQUIRED', lambda: self.policy.apply(self.policy_request('apply', **params, plan_token=preview['plan_token'])))
         result = self.apply(preview, **params)
         self.assertEqual((result['revision'], result['required_profile_revision'], result['required_profile_digest']), (2, 1, profile['digest']))

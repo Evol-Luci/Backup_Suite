@@ -4,7 +4,7 @@ import hmac
 import json
 import uuid
 
-from .check_profiles import CheckProfiles, PREVIEW_LIFETIME_SECONDS
+from .check_profiles import AUTHORITY_WARNING, CheckProfiles, PREVIEW_LIFETIME_SECONDS
 from .errors import CoreError, invalid
 from .integration_snapshots import canonical
 from .policy_schema import require_policy
@@ -55,7 +55,7 @@ class ProjectPolicy:
             if cached is not None:
                 return cached
             binding = self._binding(db, request['params'])
-            result = dict(binding=binding, next_revision=binding['previous_revision'] + 1,
+            result = dict(binding=binding, authority_warning=AUTHORITY_WARNING, next_revision=binding['previous_revision'] + 1,
                           plan_token=uuid.uuid4().hex + ':' + request['id'],
                           expires_at=(self.now() + timedelta(seconds=PREVIEW_LIFETIME_SECONDS)).isoformat())
             self.tasks.save_request(db, request, result)
