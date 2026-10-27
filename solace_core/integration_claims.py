@@ -197,6 +197,9 @@ class IntegrationClaims:
                     return CheckApprovals(self.service,self.catalog).approve(request,plan,binding)
                 with self.catalog.connect(write=True) as db:
                     self._rows(db,plan)
+                    from .policy_approvals import PolicyApprovals
+                    policy = PolicyApprovals.stamp(db,None)
+                    if policy: binding['policy'] = policy
                     token = secrets.token_hex(32); now = self.catalog._now()
                     db.execute('INSERT INTO integration_approvals VALUES (?,?,?,?,?,?,?,?)',
                         (uuid.uuid4().hex,plan.id,plan.revision,hashlib.sha256(token.encode()).hexdigest(),canonical(binding),request['actor'],1,now))

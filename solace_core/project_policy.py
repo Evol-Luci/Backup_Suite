@@ -88,6 +88,12 @@ class ProjectPolicy:
                 raise
             if canonical(binding) != canonical(preview['binding']):
                 raise _error('POLICY_PREVIEW_STALE', 'The policy, profile revision or store identity changed after preview.')
+            # Reservation and policy mutation serialize through SQLite's write
+            # transaction. Keep this binding frozen until publication/recovery
+            # has reached a terminal journal, just like approved check profiles.
+            if db.execute("SELECT 1 FROM integration_journals WHERE phase NOT IN ('committed','restored','abandoned') LIMIT 1").fetchone():
+                raise CoreError('POLICY_BUSY', 'An active integration apply or recovery journal still uses project policy.',
+                                'Finish or recover the accepted integration before changing project policy.')
             db.execute('UPDATE project_integration_policy SET revision=?, mode=?, required_profile_id=?, '
                        'required_profile_revision=?, required_profile_digest=?, allow_task_opt_in=?, actor=?, updated_at=? WHERE singleton=1',
                        (binding['previous_revision'] + 1, binding['mode'], binding['required_profile_id'],

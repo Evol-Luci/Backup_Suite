@@ -66,6 +66,9 @@ class CheckApprovals:
             if cached is not None: return cached
             token = secrets.token_hex(32); now = self.catalog._now()
             checked = dict(binding,checks=evidence)
+            from .policy_approvals import PolicyApprovals
+            policy = PolicyApprovals.stamp(db,evidence)
+            if policy: checked['policy'] = policy
             db.execute('INSERT INTO integration_checked_approvals VALUES (?,?,?,?,?,?,?,?)',
                 (uuid.uuid4().hex,plan.id,plan.revision,p['check_run'],hashlib.sha256(token.encode()).hexdigest(),canonical(checked),request['actor'],now))
             db.execute("UPDATE integration_plans SET state='approved',updated_at=? WHERE id=?",(now,plan.id))
