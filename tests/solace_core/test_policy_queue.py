@@ -10,6 +10,7 @@ from test_check_profiles import definition
 class PolicyQueueTests(TaskCase):
     def setUp(self):
         super().setUp()
+        self.service.policy_worker.close()
         self.catalog = self.service.catalog(self.project)
 
     def enable(self):

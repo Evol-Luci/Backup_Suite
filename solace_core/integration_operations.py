@@ -143,6 +143,8 @@ class IntegrationOperations:
                     intent['approval'] = selected
                     db.execute('UPDATE integration_journals SET intent_json=? WHERE operation_id=?',(canonical(intent),operation))
             elif method=='integration.prepare':
+                from .policy_queue import PolicyQueue
+                PolicyQueue.authenticate(db,self.catalog,request)
                 # Historical contribution lookup precedes task revisions/live trees.
                 task = self.tasks.row(db,p['task'])
                 if bool(task['parent_id']) != ('expected_target_revision' in p):
@@ -199,7 +201,10 @@ class IntegrationOperations:
                     self.catalog._transition(db,operation_id,'succeeded',result=result)
                     return
                 method,p = request['method'],request['params']
-                if method=='integration.prepare': self._check_prepare(db,operation_id,p,context)
+                if method=='integration.prepare':
+                    from .policy_queue import PolicyQueue
+                    PolicyQueue.authenticate(db,self.catalog,request)
+                    self._check_prepare(db,operation_id,p,context)
             if method=='integration.prepare': self.plans.prepare(operation_id,request)
             elif method=='integration.export': self.review.export(operation_id,request)
             elif method.startswith('integration.recovery.'):

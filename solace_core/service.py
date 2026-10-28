@@ -26,10 +26,12 @@ class CoreService:
         registry.workspace_store_guard=self.workspace_paths.guard_store
         self._closed = False
         self.maintenance = None
+        self.policy_worker = None
         self._guard = threading.RLock()
         self._catalogs, self._coordinators = {}, {}
         self._pending_recovery = set()
         self._check_cancellations = {}
+        self._policy_cursors = {}
         self._lock_fd = os.open(registry.path.parent / 'core.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -50,6 +52,9 @@ class CoreService:
             from .maintenance import PromptMaintenance
             self.maintenance=PromptMaintenance(self)
             self.maintenance.start()
+            from .policy_worker import PolicyWorker
+            self.policy_worker = PolicyWorker(self)
+            self.policy_worker.start()
         except BaseException:
             self.close()
             raise
@@ -59,6 +64,7 @@ class CoreService:
             if self._closed: return
             self._closed = True
             for cancellation in self._check_cancellations.values(): cancellation.set()
+        if self.policy_worker is not None: self.policy_worker.close()
         if self.maintenance is not None: self.maintenance.close()
         self.executor.shutdown(wait=True)
         os.close(self._lock_fd)
@@ -193,7 +199,8 @@ class CoreService:
             return dict(pid=os.getpid(), protocol_version=1, projects=self.registry.list(), recovery=self.recovery,
                         capabilities=['tasks.v1','workspaces.v1','project-upgrade.v1','prompt-retention.v1','integrations.v1','checks.v1','policy.v1'],
                         core_schema_supported=[1,2,3,4,5],core_schema_created=5,
-                        prompt_maintenance=dict(self.maintenance.failures) if self.maintenance else {})
+                        prompt_maintenance=dict(self.maintenance.failures) if self.maintenance else {},
+                        policy_worker=dict(self.policy_worker.failures) if self.policy_worker else {})
         if method == 'doctor':
             from .diagnostics import inspect_registry
             return inspect_registry(self.registry, p.get('project'))

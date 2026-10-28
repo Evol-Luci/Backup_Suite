@@ -202,6 +202,9 @@ class TaskOperations:
             except Exception:
                 self.service._pending_recovery.add(self.project)
 
+            if self.service.policy_worker is not None:
+                self.service.policy_worker.wake()
+
     def start(self,operation):
         with self.coordinator.lock,self.catalog.connect() as db:
             intent=rowdict(db,'SELECT * FROM workspace_intents WHERE operation_id=?',(operation,))
