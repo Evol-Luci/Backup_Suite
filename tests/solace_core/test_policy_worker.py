@@ -283,3 +283,41 @@ class PolicyWorkerTests(TaskCase):
                 (row['result_checkpoint_id'], row['target_key'].split(':', 1)[1]))
         row = self.advance()
         self.assertEqual((row['stage'], row['reason']), ('pending', 'target_changed'))
+
+    def test_contention_after_catalog_lookup_never_waits_for_acceptance(self):
+        import threading
+        self.queued()
+        original = PolicyQueue._status
+        for stage in ('queued', 'preparing'):
+            for name, lock in (('registry', self.service.registry.lock),
+                               ('coordinator', self.service.coordinator(self.project).lock)):
+                with self.subTest(stage=stage, lock=name):
+                    enter = threading.Event(); acquired = threading.Event(); release = threading.Event()
+                    holder_done = threading.Event()
+                    def holder():
+                        if not enter.wait(2): return
+                        with lock:
+                            acquired.set(); release.wait(2)
+                        holder_done.set()
+                    thread = threading.Thread(target=holder)
+                    thread.start()
+                    def status(*args):
+                        result = original(*args)
+                        enter.set()
+                        self.assertTrue(acquired.wait(1))
+                        return result
+                    try:
+                        before = time.monotonic()
+                        with patch.object(PolicyQueue, '_status', side_effect=status):
+                            PolicyQueue.tick(self.service, self.project)
+                        self.assertFalse(holder_done.is_set(), "acceptance waited for the lock holder")
+                        self.assertLess(time.monotonic()-before, 1.0)
+                    finally:
+                        release.set(); thread.join(3)
+                    row = PolicyQueue.list(self.catalog)['intents'][0]
+                    self.assertEqual(row['stage'], stage)
+                    self.assertIsNone(row['prepare_operation_id'] if stage == 'queued' else row['check_operation_id'])
+            if stage == 'queued':
+                PolicyQueue.tick(self.service, self.project)
+                row = PolicyQueue.list(self.catalog)['intents'][0]
+                self.wait_operation(row['prepare_operation_id'])

@@ -186,6 +186,23 @@ class PolicyQueue:
             plan_id=run['plan_id'], plan_revision=run['revision'], reason=None)
 
     @staticmethod
+    def _try_accept(service, project_id, request):
+        # The lookup probe is not a reservation: a publisher may acquire either
+        # lock afterward. Hold both try-locks through reentrant API acceptance.
+        # No operation completion is awaited while either lock is held.
+        if not service.registry.lock.acquire(blocking=False): return None
+        try:
+            coordinator = service.coordinator(project_id)
+            if not coordinator.lock.acquire(blocking=False): return None
+            try:
+                if service._closed: return None
+                return service._dispatch(request)
+            finally:
+                coordinator.lock.release()
+        finally:
+            service.registry.lock.release()
+
+    @staticmethod
     def tick(service, project_id, limit=32):
         """Reconcile bounded evidence; never wait for an operation in this FIFO.
 
@@ -244,7 +261,8 @@ class PolicyQueue:
                 elif row['stage'] == 'queued':
                     params = dict(project=project_id, task=row['task_id'], result=row['result_checkpoint_id'], expected_revision=row['task_revision'])
                     if row['target_key'] != 'source': params['expected_target_revision'] = row['target_revision']
-                    accepted = service._dispatch(dict(version=1, id=row['prepare_request_id'], actor='policy', method='integration.prepare', params=params))
+                    accepted = PolicyQueue._try_accept(service, project_id, dict(version=1, id=row['prepare_request_id'], actor='policy', method='integration.prepare', params=params))
+                    if accepted is None: continue
                     updates = dict(stage='preparing', prepare_operation_id=accepted['operation_id'], reason=None)
                 elif row['stage'] == 'preparing':
                     operation = catalog.get_operation(row['prepare_operation_id'])
@@ -259,8 +277,9 @@ class PolicyQueue:
                         elif result.get('conflict_count') or result.get('state') != 'prepared':
                             updates.update(stage='pending', reason='prepare_conflicted')
                         else:
-                            accepted = service._dispatch(dict(version=1, id=row['check_request_id'], actor='policy', method='integration.check.run',
+                            accepted = PolicyQueue._try_accept(service, project_id, dict(version=1, id=row['check_request_id'], actor='policy', method='integration.check.run',
                                 params=dict(project=project_id, plan=result['plan_id'], revision=result['revision'], profile=row['profile_id'])))
+                            if accepted is None: continue
                             updates.update(stage='checking', run_id=accepted['run_id'], check_operation_id=accepted['operation_id'], reason=None)
                 elif row['stage'] == 'checking':
                     with _read(catalog) as db:
