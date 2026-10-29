@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SOLACE_TEST_TMPDIR: /tmp
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tk display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk xvfb
+      - name: Core tests
+        run: python3 -m unittest discover -s tests/solace_core -p 'test_*.py' -q
+      - name: Engine tests
+        run: python3 -m unittest discover -s tests/solace_engine -p 'test_*.py' -q
+      - name: Desktop tests
+        run: xvfb-run -a python3 -m unittest discover -s tests -p 'test_*.py' -q
+      - name: Unix-socket policy acceptance
+        run: python3 -m unittest discover -s tests/solace_core -p 'test_policy_acceptance.py' -q
