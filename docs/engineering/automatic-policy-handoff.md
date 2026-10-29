@@ -39,3 +39,16 @@ At handoff, the installed launcher points to runtime `97b4e825499f5bd6`. A live 
 - Tasks 2 and 3 tested domain methods before Task 7 added strict public protocol and CLI validation. Cost if wrong: public defects would surface at Task 7; the final socket suite now covers that boundary.
 - A task's checked-queue opt-in is effective only against its confirmed project policy revision. Cost if too strict: an owner must reconfirm after a benign policy change; the rule prevents an old opt-in from silently reactivating.
 - Earlier suggestions for broader negative-code and receipt-provenance assertions remained optional test strengthening. Cost if wrong: a specific error code or provenance field could regress despite the public approval/receipt acceptance paths. No open Critical or Important review finding remains.
+
+## Local-main closeout
+
+After source review and the documentation commit, local `main` fast-forwarded from `8023231` to `a06024a6aaae73fa9839432a4eca14ff6b47ed17` without a conflict. A second verification ran from that exact merged tree, with no Python changes after the tested code HEAD:
+
+| Evidence file in the same preserved directory | Result | SHA-256 |
+| --- | --- | --- |
+| `main-core.log` | 741/741 in 340.783s | `9bbe2134117ba4b06babf00301a2e167605c1bbd2377988a7e5aa1af3c9431f1` |
+| `main-engine.log` | 52/52 in 1.916s | `018668bc2d63716005abe936674b330cd943ff9c1008ef45dccaff3776de3236` |
+| `main-top.log` | 16/16 in 0.465s | `8e399a653af27d0ff7f7a387916fc1f7d068920074894b2fcb284199de9c298e` |
+| `main-socket-acceptance.log` | 7/7 in 28.179s | `c95a2787e432b825e524682494b7531f82a8d02bdb765be8878f3f1e2110125e` |
+
+All four merged-tree commands exited 0, and the logs have no warning, error, failure or traceback. The installer preview repeated from `main` proposed the same runtime `f984d87c3d8ba24e` with the same preview-log hash above; generated user units verified again. This closeout is a documentation-only follow-up to the tested tree. At this handoff, local `main` contains the policy work and is ahead of `origin/main`; no push or installation was performed.
