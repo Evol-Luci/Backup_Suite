@@ -74,6 +74,30 @@ class PolicyWorkerTests(TaskCase):
         with self.catalog.connect() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM check_runs').fetchone()[0], 1)
 
+    def test_pending_apply_status_opens_store_read_only_without_sidecars(self):
+        import sqlite3
+        self.queued()
+        row = self.advance()
+        self.assertEqual(row['stage'], 'pending_apply', row)
+        sidecars = [Path(str(self.catalog.database) + suffix) for suffix in ('-wal', '-shm')]
+        self.assertFalse(any(path.exists() for path in sidecars))
+        original = sqlite3.connect
+        opens = []
+        def observe(database, *args, **kwargs):
+            if str(self.catalog.database) in str(database):
+                opens.append(str(database))
+                self.assertIn('mode=ro', str(database))
+                self.assertTrue(kwargs.get('uri'))
+            connection = original(database, *args, **kwargs)
+            self.assertFalse(any(path.exists() for path in sidecars))
+            return connection
+        with patch('sqlite3.connect', side_effect=observe):
+            shown = self.service._dispatch(self.request('integration.queue.show', intent=row['id']))
+        self.assertEqual(shown['stage'], 'pending_apply')
+        self.assertFalse(shown['stale'])
+        self.assertTrue(opens)
+        self.assertFalse(any(path.exists() for path in sidecars))
+
     def test_child_destination_edit_revokes_pending_apply_without_rerun(self):
         profile = self.enable()
         parent = self.create_task(); parent_path = Path(self.start(parent)['path'])

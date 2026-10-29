@@ -123,6 +123,15 @@ class ProjectCatalog:
     @contextmanager
     def connect(self, *, write=False, metadata=False):
         self.validate(require_root=False, require_objects=not metadata)
+        if not write:
+            # Offline WAL databases may create sidecars even for mode=ro.
+            # Inspection must leave the project store untouched.
+            with readonly_database(self.database) as db:
+                db.row_factory = sqlite3.Row
+                db.execute('PRAGMA foreign_keys=ON')
+                db.execute('PRAGMA query_only=ON')
+                yield db
+            return
         db = sqlite3.connect(self.database.as_uri() + ('?mode=rw' if write else '?mode=ro'), uri=True, timeout=30)
         db.row_factory = sqlite3.Row
         try:

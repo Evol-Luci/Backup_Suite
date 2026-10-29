@@ -30,6 +30,7 @@ class ProjectRepository:
 
     def __init__(self, project_root: Path, store_dir: Path):
         self._existing_only = False
+        self._scan_only = False
         requested_root = Path(project_root)
         if not requested_root.is_dir() or requested_root.is_symlink():
             raise InvalidProjectPath(f"project directory is unavailable: {project_root}")
@@ -82,10 +83,11 @@ class ProjectRepository:
             connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     @classmethod
-    def open_existing(cls, project_root: Path, store_dir: Path):
+    def open_existing(cls, project_root: Path, store_dir: Path, *, scan_only=False):
         """Open an existing store without initializing or replacing anything."""
         instance = cls.__new__(cls)
         instance._existing_only = True
+        instance._scan_only = scan_only
         instance.project_root = Path(project_root)
         instance.store_dir = Path(store_dir)
         if (not instance.project_root.is_dir() or instance.project_root.is_symlink()
@@ -102,9 +104,10 @@ class ProjectRepository:
             raise InvalidProjectPath("checkpoint database is unavailable")
         instance._database_identity = instance.database_path.stat()
         instance.object_store = ObjectStore.open_existing(instance.store_dir)
-        with instance._connect() as connection:
-            if connection.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_VERSION:
-                raise InvalidProjectPath("unsupported checkpoint schema version")
+        if not scan_only:
+            with instance._connect() as connection:
+                if connection.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_VERSION:
+                    raise InvalidProjectPath("unsupported checkpoint schema version")
         return instance
 
     def _validate_existing_identity(self):
@@ -121,6 +124,8 @@ class ProjectRepository:
 
     @contextmanager
     def _connect(self):
+        if self._scan_only:
+            raise RepositoryError('scan-only repository cannot open the checkpoint database')
         self._validate_existing_identity()
         target = self.database_path.as_uri() + "?mode=rw" if self._existing_only else self.database_path
         connection = sqlite3.connect(target, timeout=30, uri=self._existing_only)

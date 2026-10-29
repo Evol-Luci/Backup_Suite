@@ -155,7 +155,7 @@ class IntegrationClaims:
         if inventories != expected['directory_inventories']:
             stale('Directory replacement identities or entries changed.')
         if scan:
-            repo = ProjectRepository.open_existing(root,self.catalog.store)
+            repo = ProjectRepository.open_existing(root,self.catalog.store,scan_only=True)
             observed,warnings = repo.inspect_tree(profile['exclusions'],excluded=self.plans._excluder(root,profile,roots))
             if warnings or {e.path:_entry_key(e) for e in observed} != {e.path:_entry_key(e) for e in current}:
                 stale('Destination bytes or modes changed after preparation.')
