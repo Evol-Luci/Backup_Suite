@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from contextlib import closing
 from pathlib import Path
 
 from solace_core.errors import CoreError
@@ -61,8 +62,9 @@ class RetainedMountTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'UNSUPPORTED_STORAGE')
 
     def test_replaced_retired_catalog_still_blocks_registration(self):
-        with sqlite3.connect(Path(self.retired['store']) / 'checkpoints.sqlite3') as db:
-            db.execute("UPDATE core_metadata SET store_uuid='replacement'")
+        with closing(sqlite3.connect(Path(self.retired['store']) / 'checkpoints.sqlite3')) as db:
+            with db:
+                db.execute("UPDATE core_metadata SET store_uuid='replacement'")
         response = self.add_after_remount()
         self.assertFalse(response['ok'], response)
         self.assertEqual(response['error']['code'], 'STORE_UNAVAILABLE')

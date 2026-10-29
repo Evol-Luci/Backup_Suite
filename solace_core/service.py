@@ -213,8 +213,8 @@ class CoreService:
             from .policy_queue import PolicyQueue
             catalog = self.catalog(project)
             if method == 'integration.queue.list':
-                return PolicyQueue.list(catalog, p.get('after', 0), p.get('limit', 128))
-            return PolicyQueue.show(catalog, p['intent'])
+                return PolicyQueue.list(catalog, p.get('after', 0), p.get('limit', 128), service=self)
+            return PolicyQueue.show(catalog, p['intent'], service=self)
         if method.startswith('task.policy.'):
             from .task_policy import TaskPolicy
             policy = TaskPolicy(self.catalog(project))

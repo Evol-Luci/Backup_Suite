@@ -65,7 +65,7 @@ class PolicyQueue:
         return intent_id
 
     @staticmethod
-    def _status(db, catalog, row):
+    def _status(db, catalog, row, service=None):
         # Intent columns contain references and bounded worker state only. Never
         # join command output, request receipts, or retained prompt records.
         result = dict(row)
@@ -109,21 +109,44 @@ class PolicyQueue:
             plan = db.execute('SELECT current_revision,state FROM integration_plans WHERE id=?', (row['plan_id'],)).fetchone()
             if not plan or plan['current_revision'] != row['plan_revision'] or plan['state'] not in ('prepared', 'approved'):
                 reasons.append('plan_changed')
+        if row['stage'] == 'pending_apply' and not reasons and service is not None:
+            # A target may change on disk without advancing its catalog head.
+            # Validate the exact retained plan and passed evidence as approval
+            # would, but do not reserve, rerun commands, or mutate the target.
+            from .check_approvals import CheckApprovals
+            from .integration_claims import IntegrationClaims
+            from .integration_plans import IntegrationPlans
+            try:
+                retained = IntegrationPlans(service, catalog).load(row['plan_id'], row['plan_revision'])
+                IntegrationClaims(service, catalog).validate(retained, scan=True)
+            except CoreError as error:
+                if error.code in ('INTEGRATION_PLAN_STALE', 'INTEGRATION_STALE'):
+                    reasons.append('target_changed')
+                else:
+                    raise
+            else:
+                try:
+                    CheckApprovals.evidence(db, row['run_id'], retained)
+                except CoreError as error:
+                    if error.code == 'INTEGRATION_PLAN_STALE':
+                        reasons.append('check_binding_changed')
+                    else:
+                        raise
         result.update(stale=bool(reasons), stale_reasons=reasons)
         return result
 
     @staticmethod
-    def list(catalog, after=0, limit=128):
+    def list(catalog, after=0, limit=128, *, service):
         require_policy(catalog)
         if type(after) is not int or not 0 <= after <= 2**63-1 or type(limit) is not int or not 1 <= limit <= 256:
             raise invalid('Queue page requires a nonnegative SQLite integer cursor and limit from 1–256.')
         with _read(catalog) as db:
             rows = db.execute('SELECT rowid,* FROM integration_policy_intents WHERE rowid>? ORDER BY rowid LIMIT ?', (after, limit+1)).fetchall()
             page = rows[:limit]
-            return dict(intents=[PolicyQueue._status(db, catalog, row) for row in page], next_after=page[-1]['rowid'] if len(rows)>limit else None)
+            return dict(intents=[PolicyQueue._status(db, catalog, row, service) for row in page], next_after=page[-1]['rowid'] if len(rows)>limit else None)
 
     @staticmethod
-    def show(catalog, intent_id):
+    def show(catalog, intent_id, *, service):
         require_policy(catalog)
         if not isinstance(intent_id, str) or not 1 <= len(intent_id) <= 128 or '\0' in intent_id:
             raise invalid('Intent ID must be a bounded nonempty string.')
@@ -131,7 +154,7 @@ class PolicyQueue:
             row = db.execute('SELECT * FROM integration_policy_intents WHERE id=?', (intent_id,)).fetchone()
             if row is None:
                 raise CoreError('POLICY_INTENT_NOT_FOUND', 'This queue intent does not exist.', 'Inspect the policy queue list.')
-            return PolicyQueue._status(db, catalog, row)
+            return PolicyQueue._status(db, catalog, row, service)
 
     @staticmethod
     def authenticate(db, catalog, request):
@@ -152,7 +175,7 @@ class PolicyQueue:
         status = PolicyQueue._status(db, catalog, row)
         if status['stale']: refuse(status['stale_reasons'][0])
         if row['selected_profile_id'] != row['profile_id']: refuse('required profile not selected')
-        if row['stage'] in ('pending', 'done') or status['receipt_id']: refuse('intent is terminal')
+        if row['stage'] in ('pending', 'pending_apply', 'done') or status['receipt_id']: refuse('intent is terminal')
         expected = dict(project=catalog.registration['id'])
         if method == 'integration.prepare':
             expected.update(task=row['task_id'], result=row['result_checkpoint_id'], expected_revision=row['task_revision'])
@@ -247,7 +270,7 @@ class PolicyQueue:
                     accepted_updates = PolicyQueue._accepted_updates(db, row)
                     receipt = db.execute('SELECT plan_id,revision FROM integration_receipts WHERE task_id=? AND result_id=? AND target_key=?',
                         (row['task_id'], row['result_checkpoint_id'], row['target_key'])).fetchone()
-                    status = PolicyQueue._status(db, catalog, row) if not receipt else None
+                    status = PolicyQueue._status(db, catalog, row, service) if not receipt else None
                 if receipt:
                     updates = dict(stage='done', reason=None, plan_id=receipt['plan_id'], plan_revision=receipt['revision'])
                 elif accepted_updates:

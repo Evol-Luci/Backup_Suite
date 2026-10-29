@@ -25,6 +25,12 @@ class PolicyWorkerTests(TaskCase):
         worker = getattr(self.service, 'policy_worker', None)
         if worker: worker.close()
 
+    def queue_list(self, **kwargs):
+        return PolicyQueue.list(self.catalog, service=self.service, **kwargs)
+
+    def queue_show(self, intent):
+        return PolicyQueue.show(self.catalog, intent, service=self.service)
+
     def queued(self, selected=True):
         profile = self.enable()
         task = self.create_task()
@@ -32,12 +38,12 @@ class PolicyWorkerTests(TaskCase):
             CheckSelection(self.catalog).select(self.request('task.check-profile.select', task=task,
                 profile=profile, expected_revision=self.show(task)['revision']))
         self.ready(task)
-        return PolicyQueue.list(self.catalog)['intents'][0]
+        return self.queue_list()['intents'][0]
 
     def advance(self):
         for _ in range(300):
             PolicyQueue.tick(self.service, self.project)
-            row = PolicyQueue.list(self.catalog)['intents'][0]
+            row = self.queue_list()['intents'][0]
             if row['stage'] in ('pending', 'pending_apply', 'done'): return row
             time.sleep(.01)
         self.fail('policy queue did not settle')
@@ -52,6 +58,41 @@ class PolicyWorkerTests(TaskCase):
         with self.catalog.connect() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM integration_receipts').fetchone()[0], 0)
             self.assertEqual(db.execute("SELECT count(*) FROM operations WHERE actor='policy' AND kind NOT IN ('integration.prepare','integration.check.run')").fetchone()[0], 0)
+
+    def test_root_destination_edit_revokes_pending_apply_without_rerun(self):
+        self.queued()
+        row = self.advance()
+        self.assertEqual(row['stage'], 'pending_apply', row)
+        (self.root / 'external-change.txt').write_text('outside writer')
+        shown = self.service._dispatch(self.request('integration.queue.show', intent=row['id']))
+        self.assertTrue(shown['stale'], shown)
+        self.assertIn('target_changed', shown['stale_reasons'])
+        PolicyQueue.tick(self.service, self.project)
+        settled = self.service._dispatch(self.request('integration.queue.show', intent=row['id']))
+        self.assertEqual((settled['stage'], settled['reason']), ('pending', 'target_changed'))
+        self.assertEqual((self.root / 'external-change.txt').read_text(), 'outside writer')
+        with self.catalog.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM check_runs').fetchone()[0], 1)
+
+    def test_child_destination_edit_revokes_pending_apply_without_rerun(self):
+        profile = self.enable()
+        parent = self.create_task(); parent_path = Path(self.start(parent)['path'])
+        child = self.create_task(parent=parent)
+        CheckSelection(self.catalog).select(self.request('task.check-profile.select', task=child,
+            profile=profile, expected_revision=self.show(child)['revision']))
+        self.ready(child)
+        row = self.advance()
+        self.assertEqual(row['stage'], 'pending_apply', row)
+        (parent_path / 'external-change.txt').write_text('outside writer')
+        shown = self.service._dispatch(self.request('integration.queue.show', intent=row['id']))
+        self.assertTrue(shown['stale'], shown)
+        self.assertIn('target_changed', shown['stale_reasons'])
+        PolicyQueue.tick(self.service, self.project)
+        settled = self.service._dispatch(self.request('integration.queue.show', intent=row['id']))
+        self.assertEqual((settled['stage'], settled['reason']), ('pending', 'target_changed'))
+        self.assertEqual((parent_path / 'external-change.txt').read_text(), 'outside writer')
+        with self.catalog.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM check_runs').fetchone()[0], 1)
 
     def test_missing_selection_does_not_execute(self):
         self.queued(selected=False)
@@ -92,11 +133,11 @@ class PolicyWorkerTests(TaskCase):
         from solace_core.service import CoreService
         self.queued()
         PolicyQueue.tick(self.service, self.project)
-        row = PolicyQueue.list(self.catalog)['intents'][0]
+        row = self.queue_list()['intents'][0]
         self.wait_operation(row['prepare_operation_id'])
         with patch.object(self.service.coordinator(self.project), 'submit'):
             PolicyQueue.tick(self.service, self.project)
-        row = PolicyQueue.list(self.catalog)['intents'][0]
+        row = self.queue_list()['intents'][0]
         self.assertEqual(row['stage'], 'checking', row)
         self.service.close()
         self.service = CoreService(self.registry, config=self.config)
@@ -127,7 +168,7 @@ class PolicyWorkerTests(TaskCase):
         self.service.policy_worker.start()
         self.queued()
         for _ in range(300):
-            row = PolicyQueue.list(self.catalog)['intents'][0]
+            row = self.queue_list()['intents'][0]
             if row['stage'] == 'pending_apply': break
             time.sleep(.01)
         self.assertEqual(row['stage'], 'pending_apply', row)
@@ -148,7 +189,7 @@ class PolicyWorkerTests(TaskCase):
     def test_check_rechecks_target_at_acceptance(self):
         item = self.queued()
         PolicyQueue.tick(self.service, self.project)
-        row = PolicyQueue.list(self.catalog)['intents'][0]
+        row = self.queue_list()['intents'][0]
         self.wait_operation(row['prepare_operation_id'])
         original = self.service._dispatch
         def changed(request):
@@ -179,7 +220,7 @@ class PolicyWorkerTests(TaskCase):
         from solace_core.check_process import CheckExecutor
         self.queued()
         PolicyQueue.tick(self.service, self.project)
-        row = PolicyQueue.list(self.catalog)['intents'][0]
+        row = self.queue_list()['intents'][0]
         self.wait_operation(row['prepare_operation_id'])
         with patch.object(self.service.coordinator(self.project), 'submit') as submit:
             PolicyQueue.tick(self.service, self.project)
@@ -218,12 +259,12 @@ class PolicyWorkerTests(TaskCase):
         first = self.advance()
         task = self.create_task(); self.ready(task)
         for _ in range(4): PolicyQueue.tick(self.service, self.project, limit=1)
-        rows = PolicyQueue.list(self.catalog)['intents']
+        rows = self.queue_list()['intents']
         self.assertEqual(len(rows), 2)
         self.assertEqual([r['stage'] for r in rows], ['pending', 'pending'])
         timestamps = [r['updated_at'] for r in rows]
         for _ in range(4): PolicyQueue.tick(self.service, self.project, limit=1)
-        self.assertEqual(timestamps, [r['updated_at'] for r in PolicyQueue.list(self.catalog)['intents']])
+        self.assertEqual(timestamps, [r['updated_at'] for r in self.queue_list()['intents']])
 
     def test_busy_coordinator_tick_returns_without_waiting(self):
         import threading
@@ -245,7 +286,7 @@ class PolicyWorkerTests(TaskCase):
         from solace_core.check_runs import CheckRuns
         self.queued()
         PolicyQueue.tick(self.service, self.project)
-        row = PolicyQueue.list(self.catalog)['intents'][0]
+        row = self.queue_list()['intents'][0]
         self.wait_operation(row['prepare_operation_id'])
         original = CheckRuns.start
         def lost(runs, request):
@@ -277,7 +318,7 @@ class PolicyWorkerTests(TaskCase):
 
     def test_child_head_change_stops_pending_intent(self):
         self.test_child_pass_preserves_parent()
-        row = PolicyQueue.list(self.catalog)['intents'][0]
+        row = self.queue_list()['intents'][0]
         with self.catalog.connect(write=True) as db:
             db.execute('UPDATE workspaces SET head_checkpoint=? WHERE id=?',
                 (row['result_checkpoint_id'], row['target_key'].split(':', 1)[1]))
@@ -314,10 +355,10 @@ class PolicyWorkerTests(TaskCase):
                         self.assertLess(time.monotonic()-before, 1.0)
                     finally:
                         release.set(); thread.join(3)
-                    row = PolicyQueue.list(self.catalog)['intents'][0]
+                    row = self.queue_list()['intents'][0]
                     self.assertEqual(row['stage'], stage)
                     self.assertIsNone(row['prepare_operation_id'] if stage == 'queued' else row['check_operation_id'])
             if stage == 'queued':
                 PolicyQueue.tick(self.service, self.project)
-                row = PolicyQueue.list(self.catalog)['intents'][0]
+                row = self.queue_list()['intents'][0]
                 self.wait_operation(row['prepare_operation_id'])
