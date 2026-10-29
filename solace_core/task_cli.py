@@ -6,6 +6,8 @@ from .prompts import validate_prompt
 
 
 def add_parsers(commands,project_actions):
+    from .policy_cli import add_policy_parser
+    add_policy_parser(project_actions, 'project')
     upgrade=project_actions.add_parser('upgrade');upgrade.add_argument('project')
     choice=upgrade.add_mutually_exclusive_group(required=True)
     choice.add_argument('--preview',action='store_true');choice.add_argument('--apply',action='store_true')
@@ -29,6 +31,7 @@ def add_parsers(commands,project_actions):
         if action=='start': p.add_argument('--from',dest='from_checkpoint');p.add_argument('--parent-revision',type=int)
         if action in ('start','ready'): p.add_argument('--wait',action='store_true')
         if action=='show': p.add_argument('--watch',action='store_true');p.add_argument('--after',type=int,default=0)
+    add_policy_parser(task, 'task')
     from .check_cli import add_task_parser
     add_task_parser(task)
     prompt=task.add_parser('prompt').add_subparsers(dest='prompt_action',required=True)

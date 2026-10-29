@@ -43,6 +43,8 @@ def add_parsers(commands) -> None:
             parser.add_argument('--approval', required=True, help='Exact approval token returned by integration approve')
             parser.add_argument('--writers-paused', action='store_true', required=True, help='Confirm external writers are paused')
         if action in ('prepare','export','apply'): parser.add_argument('--wait', action='store_true')
+    from .policy_cli import add_queue_parser
+    add_queue_parser(actions)
     from .check_cli import add_integration_parser
     add_integration_parser(actions)
     recovery = actions.add_parser('recovery', help='Inspect or explicitly recover an interrupted apply').add_subparsers(dest='recovery_action', required=True)
