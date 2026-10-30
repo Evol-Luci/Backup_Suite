@@ -306,12 +306,13 @@ class PolicyQueue:
                             updates.update(stage='checking', run_id=accepted['run_id'], check_operation_id=accepted['operation_id'], reason=None)
                 elif row['stage'] == 'checking':
                     with _read(catalog) as db:
-                        run = db.execute('SELECT * FROM check_runs WHERE id=?', (row['run_id'],)).fetchone()
-                    operation = catalog.get_operation(row['check_operation_id'])
-                    if run and run['state'] in ('reserved', 'running') and operation['state'] in ('queued', 'running'): continue
+                        run = db.execute('SELECT r.*, (SELECT state FROM operations WHERE id=?) AS operation_state '
+                                         'FROM check_runs AS r WHERE r.id=?',
+                                         (row['check_operation_id'], row['run_id'])).fetchone()
+                    if run and run['state'] in ('reserved', 'running') and run['operation_state'] in ('queued', 'running'): continue
                     if not run:
                         updates = dict(stage='pending', reason='check_missing')
-                    elif run['state'] == 'passed' and operation['state'] == 'succeeded':
+                    elif run['state'] == 'passed' and run['operation_state'] == 'succeeded':
                         binding = json.loads(run['result_json'])['binding']
                         expected = dict(plan_id=row['plan_id'], revision=row['plan_revision'], task_id=row['task_id'], task_revision=row['task_revision'],
                             profile_id=row['profile_id'], profile_revision=row['profile_revision'], profile_digest=row['profile_digest'])

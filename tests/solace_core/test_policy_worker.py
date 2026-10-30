@@ -142,6 +142,32 @@ class PolicyWorkerTests(TaskCase):
         self.queued()
         self.assertEqual(self.advance()['reason'], 'check_failed')
 
+    def test_check_completion_between_status_reads_does_not_report_running_as_failed(self):
+        self.script = 'import time; time.sleep(.5); raise SystemExit(3)'
+        self.queued()
+        for _ in range(300):
+            PolicyQueue.tick(self.service, self.project)
+            row = self.queue_list()['intents'][0]
+            if row['stage'] == 'checking': break
+            time.sleep(.01)
+        self.assertEqual(row['stage'], 'checking', row)
+        original = self.catalog.get_operation
+
+        def finish_between_reads(operation_id):
+            if operation_id == row['check_operation_id']:
+                deadline = time.monotonic() + 5
+                while original(operation_id)['state'] in ('queued', 'running') and time.monotonic() < deadline:
+                    time.sleep(.01)
+            return original(operation_id)
+
+        with patch.object(self.catalog, 'get_operation', side_effect=finish_between_reads):
+            PolicyQueue.tick(self.service, self.project)
+        observed = self.queue_list()['intents'][0]
+        self.assertNotIn((observed['stage'], observed['reason']),
+                         (('pending', 'check_reserved'), ('pending', 'check_running')), observed)
+        self.wait_operation(row['check_operation_id'])
+        self.assertEqual(self.advance()['reason'], 'check_failed')
+
     def test_acceptance_gap_replays_same_check(self):
         item = self.queued()
         row = self.advance()
