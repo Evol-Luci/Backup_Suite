@@ -127,11 +127,14 @@ class IntegrationOperations:
                 else:
                     checked = isinstance(selected['binding'].get('checks'),dict)
                     compared = {**selected['binding'], 'checks':'not_run_by_solace'} if checked else selected['binding']
+                    compared = {k:v for k,v in compared.items() if k != 'policy'}
                     if plan is None or compared != binding:
                         stale('The supplied approval binding differs from the exact reviewed candidate.')
                     if checked:
                         from .check_approvals import CheckApprovals
                         CheckApprovals.verify(db,selected,plan)
+                    from .policy_approvals import PolicyApprovals
+                    PolicyApprovals.verify(db,selected['binding'],plan)
                     header,_ = self.claims._rows(db,plan)
                     if header['state']!='approved': stale('The current plan is no longer approved.')
                     self._insert(db,operation,request,context)
@@ -140,6 +143,8 @@ class IntegrationOperations:
                     intent['approval'] = selected
                     db.execute('UPDATE integration_journals SET intent_json=? WHERE operation_id=?',(canonical(intent),operation))
             elif method=='integration.prepare':
+                from .policy_queue import PolicyQueue
+                PolicyQueue.authenticate(db,self.catalog,request)
                 # Historical contribution lookup precedes task revisions/live trees.
                 task = self.tasks.row(db,p['task'])
                 if bool(task['parent_id']) != ('expected_target_revision' in p):
@@ -196,7 +201,10 @@ class IntegrationOperations:
                     self.catalog._transition(db,operation_id,'succeeded',result=result)
                     return
                 method,p = request['method'],request['params']
-                if method=='integration.prepare': self._check_prepare(db,operation_id,p,context)
+                if method=='integration.prepare':
+                    from .policy_queue import PolicyQueue
+                    PolicyQueue.authenticate(db,self.catalog,request)
+                    self._check_prepare(db,operation_id,p,context)
             if method=='integration.prepare': self.plans.prepare(operation_id,request)
             elif method=='integration.export': self.review.export(operation_id,request)
             elif method.startswith('integration.recovery.'):
@@ -218,6 +226,9 @@ class IntegrationOperations:
                 if p.get('writers_paused') is not True: stale('Application has no fresh writer acknowledgement.')
                 publisher = IntegrationPublisher(self.service,self.catalog)
                 staged = publisher.stage(operation_id,plan)
+                with self.catalog.connect() as db:
+                    from .policy_approvals import PolicyApprovals
+                    PolicyApprovals.verify(db,selected['binding'],plan)
                 publisher.publish(staged)
                 publisher.verify_final(staged)
                 with self.service.registry.lock, self.coordinator.lock, self.catalog.connect(write=True) as db:

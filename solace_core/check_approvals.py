@@ -66,6 +66,9 @@ class CheckApprovals:
             if cached is not None: return cached
             token = secrets.token_hex(32); now = self.catalog._now()
             checked = dict(binding,checks=evidence)
+            from .policy_approvals import PolicyApprovals
+            policy = PolicyApprovals.stamp(db,evidence)
+            if policy: checked['policy'] = policy
             db.execute('INSERT INTO integration_checked_approvals VALUES (?,?,?,?,?,?,?,?)',
                 (uuid.uuid4().hex,plan.id,plan.revision,p['check_run'],hashlib.sha256(token.encode()).hexdigest(),canonical(checked),request['actor'],now))
             db.execute("UPDATE integration_plans SET state='approved',updated_at=? WHERE id=?",(now,plan.id))
@@ -80,7 +83,7 @@ class CheckApprovals:
     def lookup(db, plan_id, revision, raw_token):
         hashed = hashlib.sha256(raw_token.encode()).hexdigest()
         rows = []
-        for table in ('integration_approvals','integration_checked_approvals') if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] == 4 else ('integration_approvals',):
+        for table in ('integration_approvals','integration_checked_approvals') if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (4, 5) else ('integration_approvals',):
             row = db.execute('SELECT * FROM '+table+' WHERE token_sha256=?',(hashed,)).fetchone()
             if row: rows.append((table,row))
         if len(rows)!=1: stale('The supplied approval is missing or ambiguous.')

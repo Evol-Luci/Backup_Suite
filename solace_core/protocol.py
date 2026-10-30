@@ -53,6 +53,11 @@ PARAMS.update(CHECK_PARAMS)
 METHODS.update(CHECK_PARAMS)
 
 
+from .policy_protocol import POLICY_PARAMS, validate_policy as validate_integration_policy
+PARAMS.update(POLICY_PARAMS)
+METHODS.update(POLICY_PARAMS)
+
+
 def encode_frame(value):
     try:
         data = (json.dumps(value, allow_nan=False, ensure_ascii=True, separators=(',', ':')) + '\n').encode('utf-8')
@@ -104,6 +109,9 @@ def validate_request(value):
     method, params = value['method'], value['params']
     if not isinstance(method, str) or method not in METHODS or not isinstance(params, dict):
         raise invalid('Unknown method or invalid parameters.')
+    if method in POLICY_PARAMS:
+        validate_integration_policy(method, params)
+        return value
     if method in CHECK_PARAMS:
         validate_check(method, params)
         return value

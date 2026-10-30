@@ -98,3 +98,9 @@ A separate reviewer identified five Important edge-case findings. Reproductions 
 ## Configured checks source continuation, 2026-10-26
 
 The source branch adds manually approved checks on isolated integration candidates. Installed-runtime acceptance and existing-store upgrades remain separate gates. See the [configured checks handoff](configured-checks-handoff.md) for current evidence and blockers. Automatic integration policy remains a later design and must define project-required minimum checks.
+
+## Current continuation, 2026-10-29
+
+The installed service now advertises `checks.v1` and schema 4, as observed through `solace core status --json`; this status observation does not replace a documented disposable installed acceptance. The [checked-queue design](../superpowers/specs/2026-10-27-automatic-integration-policy-design.md) is implemented in source at schema 5. It prepares and runs the exact required check profile after a ready result, then waits for human review, approval and paused-writer application. Its [source handoff](automatic-policy-handoff.md) records final review, tests, preview and the remaining installation gate.
+
+The next separately scoped work is installed checked-queue acceptance, followed by forward undo and GUI review/status design. True automatic application still needs a writer-handoff contract; the checked queue never asserts that external editors or agents are paused. Existing project-store upgrades remain individual preview/apply decisions.

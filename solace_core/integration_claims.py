@@ -42,7 +42,7 @@ class IntegrationClaims:
 
     def claim_access(self, db, operation_id, paths):
         """Short-lived reader ownership uses target claims, never a fake journal."""
-        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] not in (3, 4):
+        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] not in (3, 4, 5):
             for path in paths: self.assert_access(Path(path), operation_id=operation_id)
             return
         for path in dict.fromkeys(str(Path(path).absolute()) for path in paths):
@@ -87,7 +87,7 @@ class IntegrationClaims:
             self.catalog.notify()
 
     def release(self, db, operation_id: str) -> None:
-        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
+        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4, 5):
             db.execute('DELETE FROM integration_claims WHERE operation_id=?', (operation_id,))
         self.tasks.release(db, operation_id)
 
@@ -155,7 +155,7 @@ class IntegrationClaims:
         if inventories != expected['directory_inventories']:
             stale('Directory replacement identities or entries changed.')
         if scan:
-            repo = ProjectRepository.open_existing(root,self.catalog.store)
+            repo = ProjectRepository.open_existing(root,self.catalog.store,scan_only=True)
             observed,warnings = repo.inspect_tree(profile['exclusions'],excluded=self.plans._excluder(root,profile,roots))
             if warnings or {e.path:_entry_key(e) for e in observed} != {e.path:_entry_key(e) for e in current}:
                 stale('Destination bytes or modes changed after preparation.')
@@ -197,6 +197,9 @@ class IntegrationClaims:
                     return CheckApprovals(self.service,self.catalog).approve(request,plan,binding)
                 with self.catalog.connect(write=True) as db:
                     self._rows(db,plan)
+                    from .policy_approvals import PolicyApprovals
+                    policy = PolicyApprovals.stamp(db,None)
+                    if policy: binding['policy'] = policy
                     token = secrets.token_hex(32); now = self.catalog._now()
                     db.execute('INSERT INTO integration_approvals VALUES (?,?,?,?,?,?,?,?)',
                         (uuid.uuid4().hex,plan.id,plan.revision,hashlib.sha256(token.encode()).hexdigest(),canonical(binding),request['actor'],1,now))

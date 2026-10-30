@@ -197,10 +197,13 @@ class TaskOperations:
         finally:
             try:
                 with self.catalog.connect(write=True) as db:
-                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4):
+                    if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] in (3, 4, 5):
                         db.execute('DELETE FROM integration_claims WHERE operation_id=?',(operation,))
             except Exception:
                 self.service._pending_recovery.add(self.project)
+
+            if self.service.policy_worker is not None:
+                self.service.policy_worker.wake()
 
     def start(self,operation):
         with self.coordinator.lock,self.catalog.connect() as db:
@@ -282,6 +285,9 @@ class TaskOperations:
         db.execute('UPDATE workspaces SET head_checkpoint=? WHERE id=?',(checkpoint.id,workspace['id']))
         state='ready' if ready else context['state'];revision=context['expected_revision']+1
         db.execute('UPDATE tasks SET state=?,revision=?,updated_at=?,block_reason=? WHERE id=?',(state,revision,now,None if ready else self.tasks.row(db,context['task'])['block_reason'],context['task']))
+        if ready:
+            from .policy_queue import PolicyQueue
+            PolicyQueue.enqueue_ready(db,self.catalog,context['task'],checkpoint.id,revision,now)
         self.catalog._transition(db,operation_id,'succeeded',result=dict(checkpoint_id=checkpoint.id,task_id=context['task'],workspace_id=workspace['id'],
             revision=revision,file_count=checkpoint.file_count,logical_bytes=checkpoint.logical_bytes),kind='task.ready' if ready else 'workspace.checkpointed')
         self.tasks.release(db,operation_id)

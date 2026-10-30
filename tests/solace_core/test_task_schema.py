@@ -76,11 +76,11 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(caught.exception.code,'UPGRADE_PREVIEW_STALE')
         self.assertFalse((self.store/'schema-backups').exists())
 
-    def test_new_store_uses_v4_and_source_head_is_independent(self):
+    def test_new_store_uses_v5_and_source_head_is_independent(self):
         from solace_core.schema import schema_version
         from solace_core.lineage import Lineage
         catalog=ProjectCatalog.create(self.registration,self.policy)
-        self.assertEqual(schema_version(catalog),4)
+        self.assertEqual(schema_version(catalog),5)
         repo=catalog.open_existing();lineage=Lineage(catalog)
         (self.project/'a').write_bytes(b'abc')
         source=repo.create_checkpoint('source',parent_id=None,publication_hook=lambda db,cp:lineage.publish_source(db,cp,[]))

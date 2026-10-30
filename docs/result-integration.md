@@ -2,7 +2,7 @@
 
 Manual child-to-parent and root-task-to-source integration is installed and passed disposable live acceptance on 2026-10-23. See the [installed acceptance and rollback record](engineering/2026-10-23-result-integration-installed-acceptance.md) and the earlier [source review](engineering/2026-10-16-result-integration-review-and-acceptance.md).
 
-The installed core advertises `integrations.v1`. Opening an existing project never migrates it. The installed runtime creates core schema 3; the configured-checks source branch creates schema 4; existing schema-1/2 stores need an explicit `project upgrade --preview`, then an individually approved apply using that preview's exact token. Schema 2 retains task support; integration requires 3. Engine and registry schemas remain 1. An old runtime refuses schema 3; runtime rollback cannot downgrade databases. See [store upgrades](task-workspaces.md#upgrade-an-existing-store) and the source-branch [configured checks guide](configured-checks.md).
+The installed core advertises `integrations.v1` and `checks.v1`; on 2026-10-29 it reported new-store schema 4 and support for schemas 1–4. This checkout adds `policy.v1` and schema 5. Opening an existing project never migrates it: each schema step needs `project upgrade --preview` and an individually reviewed apply using that preview's exact token. Schema 2 retains task support; integration requires 3, checks require 4, and policy requires 5. Engine and registry schemas remain 1. An old runtime refuses a newer schema; runtime rollback cannot downgrade databases. See [store upgrades](task-workspaces.md#upgrade-an-existing-store), [configured checks](configured-checks.md) and [checked queue](automatic-policy.md).
 
 ## What is reviewed
 

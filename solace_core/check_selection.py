@@ -13,12 +13,21 @@ class CheckSelection:
     @staticmethod
     def selected(db, task_id: str) -> dict | None:
         # Older catalogs remain readable without introducing schema-four queries.
-        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] != 4:
+        if db.execute('SELECT schema_version FROM core_metadata').fetchone()[0] not in (4, 5):
             return None
         cursor = db.cursor()
         cursor.row_factory = sqlite3.Row
         row = cursor.execute('SELECT profile_id,selected_revision,selected_at FROM task_check_profiles WHERE task_id=?', (task_id,)).fetchone()
         return dict(row) if row else None
+
+    @staticmethod
+    def policy_profiles(db, task_id, project):
+        """Keep task-selected checks separate from mandatory project checks."""
+        selected = CheckSelection.selected(db, task_id)
+        return dict(required_profile_id=project['required_profile_id'],
+                    required_profile_revision=project['required_profile_revision'],
+                    required_profile_digest=project['required_profile_digest'],
+                    selected_profile_id=selected['profile_id'] if selected else None)
 
     @staticmethod
     def copy_parent(db, parent_id: str, child_id: str, now: str) -> None:

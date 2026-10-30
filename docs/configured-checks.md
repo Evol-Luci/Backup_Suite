@@ -1,6 +1,6 @@
 # Configured checks for manual integration
 
-Configured checks run approved project commands on a private copy of the exact prepared candidate. They do not approve or apply it automatically. The source branch supports `checks.v1` and schema 4; installation and acceptance of that runtime are separate steps. The installed manual-integration runtime described in [result integration](result-integration.md) must not be assumed to contain this feature.
+Configured checks run approved project commands on a private copy of the exact prepared candidate. They do not approve or apply it automatically. On 2026-10-29 the installed core advertised `checks.v1` and schema 4; that status check does not establish disposable installed acceptance of checks. The [source handoff](engineering/configured-checks-handoff.md) records source acceptance. This checkout also adds [checked-queue policy](automatic-policy.md), which has its own source and installation gates.
 
 ## Upgrade and backup
 
@@ -16,7 +16,7 @@ A profile is JSON with `version: 1`, a `name`, an `environment` object, and orde
 
 Run `solace project check-profile preview PROJECT create --definition profile.json`, inspect commands and the authority warning, then apply with `solace project check-profile apply PROJECT create --definition profile.json --plan-token TOKEN --confirmed`. A fresh token binds the exact definition and current project state. Update and retire also require preview and confirmation. Commands are trusted same-user code: they can access the user's files and network; the private candidate copy is **not a security sandbox**. Arguments are passed directly, without implicit shell parsing. The environment is restricted; PATH and LANG have defaults, while HOME and TMPDIR are private. A profile may override PATH and LANG.
 
-Select the approved ID before marking the result ready: `solace task check-profile select PROJECT TASK PROFILE`. Children inherit their parent's selection, and may select another approved profile. A ready task must be resumed and produce a new result to change its selection. The future automatic-policy design must establish project-required minimum checks; this manual slice does not enforce such a minimum.
+Select the approved ID before marking the result ready: `solace task check-profile select PROJECT TASK PROFILE`. Children inherit their parent's selection, and may select another approved profile. A ready task must be resumed and produce a new result to change its selection. Schema-5 [project policy](automatic-policy.md) can require an exact profile for every new integration approval; older stores retain the explicit unchecked path.
 
 ## Run, review and apply
 

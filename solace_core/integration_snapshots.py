@@ -57,7 +57,15 @@ class SnapshotStore:
         # The engine insertion primitive needs an existing repository handle,
         # but never reads its project root. Use the store's surviving parent,
         # never the mutable task workspace or registered source.
-        self.repository = ProjectRepository.open_existing(catalog.store.parent, catalog.store)
+        self._repository = None
+
+    @property
+    def repository(self):
+        # Reading retained snapshots needs only the catalog and object store.
+        # Open the writable engine adapter only when publishing a checkpoint.
+        if self._repository is None:
+            self._repository = ProjectRepository.open_existing(self.catalog.store.parent, self.catalog.store)
+        return self._repository
 
     def iter_bytes(self, entry: FileEntry):
         """Yield bounded blocks; content is verified only after full exhaustion.

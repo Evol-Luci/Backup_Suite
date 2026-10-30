@@ -99,6 +99,8 @@ class CheckRuns:
                 # Recheck request and profile under the reservation transaction.
                 cached = self._lookup(request, db)
                 if cached is not None: return cached
+                from .policy_queue import PolicyQueue
+                PolicyQueue.authenticate(db,self.catalog,request)
                 active = CheckProfiles.active(db, p['profile'])
                 if (active['revision'], active['digest']) != (profile['revision'],profile['digest']):
                     raise _error('The active check profile revision changed.')
@@ -198,6 +200,8 @@ class CheckRuns:
             with self.catalog.connect() as db:
                 row = self._row(run_id,db)
                 if row['state'] not in _ACTIVE: return
+                from .policy_queue import PolicyQueue
+                PolicyQueue.authenticate(db,self.catalog,request)
                 retained = json.loads(row['result_json'])
                 profile = CheckProfiles._read(db, CheckProfiles._row(db,row['profile_id']), row['profile_revision'])
             plan = self.plans.load(row['plan_id'],row['revision'])
@@ -208,6 +212,7 @@ class CheckRuns:
                     raise _error('The check binding changed before execution.')
             stage = self.staging.stage(run_id, plan)
             with self.catalog.connect(write=True) as db:
+                PolicyQueue.authenticate(db,self.catalog,request)
                 db.execute("UPDATE check_runs SET state='running',updated_at=? WHERE id=?",(self.catalog._now(),run_id))
                 self.catalog._transition(db,operation_id,'running')
             executor = CheckExecutor(profile['definition']['environment'])
@@ -322,7 +327,7 @@ class CheckRuns:
     def recover(db):
         """No pass is reconstructed. Uncertain survivors retain their owned paths."""
         cursor = db.cursor(); cursor.row_factory = sqlite3.Row
-        if cursor.execute('SELECT schema_version FROM core_metadata').fetchone()[0] != 4: return
+        if cursor.execute('SELECT schema_version FROM core_metadata').fetchone()[0] not in (4, 5): return
         now = datetime.now(timezone.utc).isoformat()
         for row in cursor.execute("SELECT * FROM check_runs WHERE state IN ('reserved','running')").fetchall():
             result = json.loads(row['result_json'] or '{}')

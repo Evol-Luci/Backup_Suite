@@ -84,6 +84,10 @@ class IntegrationCommit:
                 plan.incoming.checkpoint_id != plan.result_id):
             stale('The journal no longer matches its exact reviewed version binding.')
         selected = intent.get('approval')
+        if isinstance(selected,dict):
+            from .policy_approvals import PolicyApprovals
+            policy = PolicyApprovals.verify(db,selected['binding'],plan)
+            if policy: binding['policy'] = policy
         if isinstance(selected,dict) and isinstance(selected.get('binding',{}).get('checks'),dict):
             from .check_approvals import CheckApprovals
             CheckApprovals.verify(db,selected,plan)
@@ -179,6 +183,8 @@ class IntegrationCommit:
                        profile=json.loads(revision['profile_json']),protected_roots=intent['expected']['protected_roots'],
                        decisions=dict(plan_id=plan.id,revision=plan.revision),
                        **{name:asdict(getattr(plan,name)) for name in ('base','incoming','current','candidate')})
+        if 'policy' in intent['approval']['binding']:
+            details['policy'] = intent['approval']['binding']['policy']
         db.execute('INSERT INTO integration_receipts VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                    (receipt_id,plan.id,plan.revision,plan.task_id,plan.result_id,plan.target.key,operation_id,before,after,canonical(details),now))
         db.execute("UPDATE integration_journals SET phase='committed' WHERE operation_id=?",(journal.operation_id,))
@@ -203,6 +209,7 @@ class IntegrationCommit:
             # selected provenance without duplicating its inventories/bindings.
             selected = details['approval']
             public = {k:details[k] for k in ('project_id','actor','event_id','original_operation_id','checks','previous_receipt_id','profile','protected_roots','base','incoming','current','candidate')}
+            if 'policy' in details: public['policy'] = details['policy']
             public['approval'] = dict(id=selected['id'],token_sha256=selected['token_sha256'],
                                       binding_sha256=hashlib.sha256(canonical(selected['binding']).encode()).hexdigest())
             public.update(target_head=details['target']['head'],target_task_id=details['target']['task_id'])

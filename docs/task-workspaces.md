@@ -6,7 +6,7 @@ The installed local core supports parent tasks and direct children. External too
 
 ## Upgrade an existing store
 
-The installed runtime creates schema-3 projects and supports schemas 1–3; existing projects remain unchanged until explicit upgrade. Schema-1 projects retain checkpoint and doctor access, schema 2 supports tasks, and integration requires 3. Upgrade preview names the actual supported target; inspect its exact token before any separately authorized apply. Engine and registry schema versions remain 1.
+On 2026-10-29 the installed runtime reported new-store schema 4 and support for schemas 1–4; this checkout adds schema 5. Existing projects remain unchanged until explicit upgrade. Schema-1 projects retain checkpoint and doctor access, schema 2 supports tasks, integration requires 3, configured checks require 4, and checked-queue policy requires 5. Upgrade preview names the actual supported target; inspect its exact token before any separately authorized apply. Engine and registry schema versions remain 1.
 
 ```bash
 solace project upgrade PROJECT --preview --json
@@ -15,7 +15,7 @@ solace project upgrade PROJECT --apply --plan-token TOKEN --request-id REQUEST_U
 
 Read the preview and use its exact token. Apply refuses a stale preview or pending operations. It saves a consistent SQLite backup at `STORE/schema-backups/REQUEST_UUID/checkpoints.sqlite3`, verifies it, and commits schema changes and their receipt together. Original files and immutable objects are preserved. A failed migration preserves its backup evidence and rolls back SQL changes. Repeat the same apply request/token/UUID to retrieve its original receipt.
 
-Runtime rollback does not downgrade project databases or erase task/workspace references. A schema-1 core refuses schema 2; the installed schema-2 core refuses schema 3. Preserve the store and return to a compatible runtime; do not replace its database with an old backup over new task history. Doctor reports versions and this boundary. Installation preview never migrates a project.
+Runtime rollback does not downgrade project databases or erase task/workspace references. An older core refuses a project schema it does not support. Preserve the store and return to a compatible runtime; do not replace its database with an old backup over new task history. Doctor reports versions and this boundary. Installation preview never migrates a project.
 
 ## Give tools separate copies
 
